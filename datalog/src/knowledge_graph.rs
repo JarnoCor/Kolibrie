@@ -239,7 +239,7 @@ impl KnowledgeGraph {
         inferred_so_far
     }
 
-    fn evaluate_rule_with_delta(&self, rule: &Rule, all_facts: &Vec<Triple>, delta_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
+    pub fn evaluate_rule_with_delta(&self, rule: &Rule, all_facts: &Vec<Triple>, delta_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
         let n = rule.premise.len();
         let mut results = Vec::new();
 
@@ -247,6 +247,10 @@ impl KnowledgeGraph {
             let mut current_bindings = vec![BTreeMap::new()];
             
             current_bindings = self.join_premise_with_hash_join(&rule.premise[i], delta_facts, current_bindings);
+
+            // println!("{:#?}", rule.premise[i]);
+            // println!("i = {}", i);
+            // println!("{:#?}", current_bindings);
             
             // Join remaining premises with all facts
             for j in 0..n {
@@ -254,6 +258,8 @@ impl KnowledgeGraph {
                     continue;
                 }
                 current_bindings = self.join_premise_with_hash_join(&rule.premise[j], all_facts, current_bindings);
+                // println!("j = {}", j);
+                // println!("{:#?}", current_bindings);
                 if current_bindings.is_empty() {
                     break;
                 }
@@ -966,7 +972,7 @@ pub fn matches_rule_pattern(
     }
 }
 
-fn evaluate_filters(
+pub fn evaluate_filters(
     bindings: &HashMap<String, u32>, 
     filters: &Vec<FilterCondition>, 
     dict: &Dictionary
