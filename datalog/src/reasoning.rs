@@ -269,6 +269,43 @@ impl Reasoner {
         results
     }
 
+    pub fn evaluate_rule_with_delta_improved(&self, rule: &Rule, all_facts: &Vec<Triple>, delta_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
+        let n = rule.premise.len();
+        let mut results = Vec::new();
+
+        for i in 0..n {
+            let mut current_bindings = vec![BTreeMap::new()];
+            
+            current_bindings = self.join_premise_with_hash_join(&rule.premise[i], delta_facts, current_bindings);
+            
+            // Join remaining premises with all facts
+            for j in 0..n {
+                if j == i {
+                    continue;
+                }
+
+                if j < i {
+                    let difference: Vec<_> = all_facts.iter().filter(|triple| !delta_facts.contains(triple)).cloned().collect();
+                    current_bindings = self.join_premise_with_hash_join(&rule.premise[j], &difference, current_bindings);
+                } else {
+                    current_bindings = self.join_premise_with_hash_join(&rule.premise[j], all_facts, current_bindings);
+                }
+
+                if current_bindings.is_empty() {
+                    break;
+                }
+            }
+            
+            // Convert and add results
+            for binding in current_bindings {
+                let u32_binding = self.convert_string_binding_to_u32(&binding);
+                results.push(u32_binding);
+            }
+        }
+
+        results
+    }
+
     pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
         // Collect all known facts
         let all_initial = self.index_manager.query(None, None, None);
@@ -842,7 +879,7 @@ pub fn matches_rule_pattern(
     }
 }
 
-fn evaluate_filters(
+pub fn evaluate_filters(
     bindings: &HashMap<String, u32>, 
     filters: &Vec<FilterCondition>, 
     dict: &Dictionary
