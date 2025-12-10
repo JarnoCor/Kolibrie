@@ -8,7 +8,7 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-pub mod knowledge_graph;
-pub mod parser_n3_logic;
 pub mod reasoning;
+pub mod parser_n3_logic;
 pub mod maintenance;
+pub mod reasoning_experimental;
