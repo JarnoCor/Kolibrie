@@ -272,6 +272,8 @@ impl Reasoner {
     pub fn evaluate_rule_with_delta_improved(&self, rule: &Rule, all_facts: &Vec<Triple>, delta_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
         let n = rule.premise.len();
         let mut results = Vec::new();
+        
+        let difference: Vec<_> = all_facts.iter().filter(|triple| !delta_facts.contains(triple)).cloned().collect();
 
         for i in 0..n {
             let mut current_bindings = vec![BTreeMap::new()];
@@ -285,7 +287,6 @@ impl Reasoner {
                 }
 
                 if j < i {
-                    let difference: Vec<_> = all_facts.iter().filter(|triple| !delta_facts.contains(triple)).cloned().collect();
                     current_bindings = self.join_premise_with_hash_join(&rule.premise[j], &difference, current_bindings);
                 } else {
                     current_bindings = self.join_premise_with_hash_join(&rule.premise[j], all_facts, current_bindings);
@@ -300,6 +301,31 @@ impl Reasoner {
             for binding in current_bindings {
                 let u32_binding = self.convert_string_binding_to_u32(&binding);
                 results.push(u32_binding);
+            }
+        }
+
+        results
+    }
+
+    pub fn evaluate_rule_with_restrictions(&mut self, rule: &Rule, positive_facts: &HashSet<Triple>, positive_1: &HashSet<Triple>, positive_2: &HashSet<Triple>) -> Vec<Triple> {
+        let positive_facts: Vec<_> = positive_facts.iter().cloned().collect();
+        let positive_1: Vec<_> = positive_1.iter().cloned().collect();
+
+        let bindings = self.evaluate_rule_with_delta_improved(rule, &positive_facts, &positive_1);
+
+        let mut results = Vec::new();
+        
+        for binding in bindings {
+            // check if the binding adheres to the filters of the rule
+            if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                for conclusion in &rule.conclusion {
+                    let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+
+                    // the inferred triple should not be inside positive_2
+                    if !positive_2.contains(&inferred) {
+                        results.push(inferred);
+                    }
+                }
             }
         }
 

@@ -1,16 +1,16 @@
-use crate::knowledge_graph::{KnowledgeGraph, construct_triple};
-use crate::knowledge_graph::{evaluate_filters};
+use crate::reasoning::{Reasoner, construct_triple};
+use crate::reasoning::{evaluate_filters};
 // use shared::rule::Rule;
 // use shared::terms::Term;
 use shared::triple::Triple;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{/*BTreeMap, */HashMap, HashSet};
 // use std::time::Instant;
 
 /// A wrapper struct to keep track of the trace.
 /// Contains methods for counting incremental view maintenance.
 pub struct CountingMaintenanceGraph {
     /// The knowledge graph to perform incremental view maintenance on
-    pub kg: KnowledgeGraph,
+    pub kg:Reasoner,
     /// The trace
     pub trace: Vec<HashMap<Triple, u32>>,
 }
@@ -18,7 +18,7 @@ pub struct CountingMaintenanceGraph {
 impl CountingMaintenanceGraph {
     pub fn new() -> CountingMaintenanceGraph {
         CountingMaintenanceGraph {
-            kg: KnowledgeGraph::new(),
+            kg:Reasoner::new(),
             trace: Vec::new(),
         }
     }
@@ -37,10 +37,6 @@ impl CountingMaintenanceGraph {
         let mut delta = all_initial;
         let mut inferred_so_far = Vec::new();
 
-
-        let mut i = 0;
-
-        // loop {
         loop {
 
             let mut new_delta = HashSet::new();
@@ -53,7 +49,7 @@ impl CountingMaintenanceGraph {
             // delta berekenen
             for rule in self.kg.rules.clone() {
                 // evaluate the rule using the facts in delta
-                let bindings = self.kg.evaluate_rule_with_delta(&rule, &all_facts.iter().cloned().collect(), &delta);
+                let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &all_facts.iter().cloned().collect(), &delta);
 
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
@@ -119,6 +115,14 @@ impl CountingMaintenanceGraph {
         trace
     }
 
+    pub fn decode_triple(&self, triple: &Triple) -> String {
+        let subject = self.kg.dictionary.decode(triple.subject).unwrap_or("unknown");
+        let predicate = self.kg.dictionary.decode(triple.predicate).unwrap_or("unknown");
+        let object = self.kg.dictionary.decode(triple.object).unwrap_or("unknown");
+
+        format!("{} {} {}", subject, predicate, object)
+    }
+
 
 
 
@@ -137,17 +141,26 @@ impl CountingMaintenanceGraph {
 
         let mut i = 0;
 
-        let n_o = self.trace[i].clone();
-        
-        multiset_add(&mut self.trace[i], added_facts);
-        let deleted = multiset_subtract(&mut self.trace[i], removed_facts);
+        let mut n_o = self.trace[i].clone();
 
+        self.print_trace();
+        
+        let new = multiset_add(&mut self.trace[i], added_facts);
+        let deleted = multiset_subtract(&mut self.trace[i], removed_facts);
+        
         for triple in deleted {
             self.kg.index_manager.delete(&triple);
+            println!("{}", self.decode_triple(&triple));
+        }
+        
+        for triple in new {
+            self.kg.index_manager.insert(&triple);
+            println!("{}", self.decode_triple(&triple));
         }
 
-        let n_n = self.trace[i].clone();
+        let mut n_n: HashMap<Triple, u32> = self.trace[i].clone();
 
+        self.print_trace();
 
         let mut delta_o: HashSet<Triple>;
         let mut delta_n: HashSet<Triple>;
@@ -160,15 +173,107 @@ impl CountingMaintenanceGraph {
             delta_n = n_n.keys().cloned().collect();
             delta_n = delta_n.difference(&i_n).cloned().collect();
 
+            // println!("{:#?}", delta_o);
+            // println!("{:#?}", delta_n);
+
             if delta_o.is_empty() && delta_n.is_empty() {
                 break;
             }
 
             i_o = i_o.union(&delta_o).cloned().collect();
-            i_n = i_o.union(&delta_n).cloned().collect();
+            i_n = i_n.union(&delta_n).cloned().collect();
 
 
-            i_on = (&i_on - &delta_n);// | (&delta_o - &i_n);
+            let mut diff1: HashSet<Triple> = i_on.difference(&delta_n).cloned().collect();
+            let mut diff2: HashSet<Triple> = delta_o.difference(&i_n).cloned().collect();
+
+            i_on = diff1.union(&diff2).cloned().collect();
+            
+            diff1 = i_no.difference(&delta_o).cloned().collect();
+            diff2 = delta_n.difference(&i_o).cloned().collect();
+
+            i_no = diff1.union(&diff2).cloned().collect();
+
+            if delta_o == delta_n && i_on.is_empty() && i_no.is_empty() {
+                break;
+            }
+
+            i += 1;
+            // println!("{}", i);
+
+            if let None = self.trace.get(i) {
+                let counts = HashMap::new();
+                self.trace.push(counts);
+            }
+
+            n_o = self.trace[i].clone();
+
+
+            let symm_dif: Vec<Triple> = i_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_n).cloned().collect();
+            let delta: Vec<Triple> = delta_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_n).cloned().collect();
+
+            let mut removed = Vec::new();
+
+            for rule in self.kg.rules.clone() {
+                let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &symm_dif, &delta);
+
+                for binding in bindings {
+                    // check if the binding adheres to the filters of the rule
+                    if evaluate_filters(&binding, &rule.filters, &self.kg.dictionary) {
+                        for conclusion in &rule.conclusion {
+                            let inferred = construct_triple(conclusion, &binding, &mut self.kg.dictionary);
+
+                            removed.push(inferred);
+                        }
+                    }
+                }
+
+                removed.extend(self.kg.evaluate_rule_with_restrictions(&rule, &i_o, &delta_o, &i_on).into_iter());
+            }
+
+
+            let deleted = multiset_subtract(&mut self.trace[i], removed);
+
+            for triple in deleted {
+                self.kg.index_manager.delete(&triple);
+                println!("{}", self.decode_triple(&triple));
+            }
+
+
+
+
+            let symm_dif: Vec<Triple> = i_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_o).cloned().collect();
+            let delta: Vec<Triple> = delta_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_o).cloned().collect();
+
+            let mut added = Vec::new();
+
+            for rule in self.kg.rules.clone() {
+                let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &symm_dif, &delta);
+
+                for binding in bindings {
+                    // check if the binding adheres to the filters of the rule
+                    if evaluate_filters(&binding, &rule.filters, &self.kg.dictionary) {
+                        for conclusion in &rule.conclusion {
+                            let inferred = construct_triple(conclusion, &binding, &mut self.kg.dictionary);
+
+                            added.push(inferred);
+                        }
+                    }
+                }
+
+                added.extend(self.kg.evaluate_rule_with_restrictions(&rule, &i_n, &delta_n, &i_no).into_iter());
+            }
+
+            let new = multiset_add(&mut self.trace[i], added);
+
+            for triple in new {
+                self.kg.index_manager.insert(&triple);
+                println!("{}", self.decode_triple(&triple));
+            }
+
+
+
+            n_n = self.trace[i].clone();
 
 
         }
@@ -189,10 +294,18 @@ impl CountingMaintenanceGraph {
 
 
 
-pub fn multiset_add(multiset: &mut HashMap<Triple, u32>, added: Vec<Triple>) {
+pub fn multiset_add(multiset: &mut HashMap<Triple, u32>, added: Vec<Triple>) -> Vec<Triple> {
+    let mut new = Vec::new();
+
     for triple in added {
+        if let None = multiset.get(&triple) {
+            new.push(triple.clone());
+        }
+
         multiset.entry(triple).and_modify(|count| *count += 1).or_insert(1);
     }
+
+    new
 }
 
 pub fn multiset_subtract(multiset: &mut HashMap<Triple, u32>, subtracted: Vec<Triple>) -> Vec<Triple> {
@@ -337,7 +450,7 @@ mod tests {
 
 
     #[test]
-    fn semi_naive_paper_test() {
+    fn semi_naive_counting_graph_test() {
         let mut cmg = CountingMaintenanceGraph::new();
 
         cmg.kg.add_abox_triple("a", "edge", "b");
@@ -383,6 +496,85 @@ mod tests {
             filters: vec![],
     });
 
+    //     cmg.kg.add_rule(Rule {
+    //         premise: vec![
+    //         (
+    //             Term::Variable("x".to_string()),
+    //             Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+    //             Term::Variable("y".to_string()),
+    //         ),
+    //         ],
+    //         conclusion: vec![(
+    //             Term::Variable("y".to_string()),
+    //             Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+    //             Term::Variable("x".to_string()),
+    //         )],
+    //         filters: vec![],
+    // });
+
+    let inferred_facts = cmg.semi_naive_counting();
+
+
+    cmg.print_trace();
+
+    let all_facts = cmg.kg.index_manager.query(None, None, None);
+
+    let mut readable_inferred_facts = Vec::new();
+    let mut readable_all_facts = Vec::new();
+
+    for triple in inferred_facts.clone() {
+            let subject = cmg.kg.dictionary.decode(triple.subject).unwrap();
+            let predicate = cmg.kg.dictionary.decode(triple.predicate).unwrap();
+            let object = cmg.kg.dictionary.decode(triple.object).unwrap();
+
+            readable_inferred_facts.push(format!("{} {} {}", subject, predicate, object));
+
+    }
+
+    for triple in all_facts.clone() {
+            let subject = cmg.kg.dictionary.decode(triple.subject).unwrap();
+            let predicate = cmg.kg.dictionary.decode(triple.predicate).unwrap();
+            let object = cmg.kg.dictionary.decode(triple.object).unwrap();
+
+            readable_all_facts.push(format!("{} {} {}", subject, predicate, object));
+
+    }
+
+    println!("all facts: {:#?}", readable_all_facts);
+    println!("inferred facts: {:#?}", readable_inferred_facts);
+    }
+
+    #[test]
+    fn maintenance_counting_graph_test() {
+        let mut cmg = CountingMaintenanceGraph::new();
+
+        cmg.kg.add_abox_triple("a", "edge", "b");
+        cmg.kg.add_abox_triple("b", "edge", "c");
+        cmg.kg.add_abox_triple("e", "edge", "d");
+        cmg.kg.add_abox_triple("e", "reachable", "d");
+
+
+        cmg.kg.add_rule(Rule {
+            premise: vec![
+            (
+                Term::Variable("x".to_string()),
+                Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+                Term::Variable("y".to_string()),
+            ),
+            (
+                Term::Variable("y".to_string()),
+                Term::Constant(cmg.kg.dictionary.clone().encode("reachable")),
+                Term::Variable("z".to_string()),
+            ),
+            ],
+            conclusion: vec![(
+                Term::Variable("x".to_string()),
+                Term::Constant(cmg.kg.dictionary.clone().encode("reachable")),
+                Term::Variable("z".to_string()),
+            )],
+            filters: vec![],
+        });
+
         cmg.kg.add_rule(Rule {
             premise: vec![
             (
@@ -392,16 +584,152 @@ mod tests {
             ),
             ],
             conclusion: vec![(
-                Term::Variable("y".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
                 Term::Variable("x".to_string()),
+                Term::Constant(cmg.kg.dictionary.clone().encode("reachable")),
+                Term::Variable("y".to_string()),
             )],
             filters: vec![],
     });
 
-    let _ = cmg.semi_naive_counting();
+    //     cmg.kg.add_rule(Rule {
+    //         premise: vec![
+    //         (
+    //             Term::Variable("x".to_string()),
+    //             Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+    //             Term::Variable("y".to_string()),
+    //         ),
+    //         ],
+    //         conclusion: vec![(
+    //             Term::Variable("y".to_string()),
+    //             Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+    //             Term::Variable("x".to_string()),
+    //         )],
+    //         filters: vec![],
+    // });
+
+    let all_inferred = cmg.semi_naive_counting();
+    let mut readable_all_inferred = Vec::new();
+
+    for triple in all_inferred.clone() {
+        let subject = cmg.kg.dictionary.decode(triple.subject).unwrap();
+        let predicate = cmg.kg.dictionary.decode(triple.predicate).unwrap();
+        let object = cmg.kg.dictionary.decode(triple.object).unwrap();
+
+        readable_all_inferred.push(format!("{} {} {}", subject, predicate, object));
+    }
+
+    // println!("all facts: {:#?}", readable_all_inferred);
 
 
     cmg.print_trace();
+
+    let removed: Vec<Triple> = vec![
+        Triple {
+            subject: cmg.kg.dictionary.encode("b"),
+            predicate: cmg.kg.dictionary.encode("edge"),
+            object: cmg.kg.dictionary.encode("c"),
+        },
+        // Triple {
+        //     subject: cmg.kg.dictionary.encode("c"),
+        //     predicate: cmg.kg.dictionary.encode("edge"),
+        //     object: cmg.kg.dictionary.encode("b"),
+        // },
+    ];
+
+    cmg.maintenance_counting(Vec::new(), removed);
+
+    let all_facts = cmg.kg.index_manager.query(None, None, None);
+    let mut readable_all_facts = Vec::new();
+
+    for triple in all_facts.clone() {
+            let subject = cmg.kg.dictionary.decode(triple.subject).unwrap();
+            let predicate = cmg.kg.dictionary.decode(triple.predicate).unwrap();
+            let object = cmg.kg.dictionary.decode(triple.object).unwrap();
+
+            readable_all_facts.push(format!("{} {} {}", subject, predicate, object));
+    }
+
+    // println!("all facts: {:#?}", readable_all_facts);
+
+    cmg.print_trace();
+    // println!("inferred facts: {:#?}", readable_inferred_facts);
+    }
+
+    #[test]
+    fn maintenance_counting_small_test() {
+        let mut cmg = CountingMaintenanceGraph::new();
+
+        cmg.kg.add_abox_triple("a", "t", "b");
+        cmg.kg.add_abox_triple("f", "t", "b");
+        cmg.kg.add_abox_triple("c", "t", "d");
+        cmg.kg.add_abox_triple("g", "r", "h");
+
+        cmg.kg.add_rule(Rule {
+            premise: vec![
+            (
+                Term::Variable("x".to_string()),
+                Term::Constant(cmg.kg.dictionary.clone().encode("t")),
+                Term::Variable("y".to_string()),
+            ),
+            ],
+            conclusion: vec![(
+                Term::Variable("y".to_string()),
+                Term::Constant(cmg.kg.dictionary.clone().encode("r")),
+                Term::Variable("y".to_string()),
+            )],
+            filters: vec![],
+        });
+
+        let all_inferred = cmg.semi_naive_counting();
+        let mut readable_all_inferred = Vec::new();
+
+        for triple in all_inferred.clone() {
+            let subject = cmg.kg.dictionary.decode(triple.subject).unwrap();
+            let predicate = cmg.kg.dictionary.decode(triple.predicate).unwrap();
+            let object = cmg.kg.dictionary.decode(triple.object).unwrap();
+
+            readable_all_inferred.push(format!("{} {} {}", subject, predicate, object));
+        }
+
+        println!("all facts: {:#?}", readable_all_inferred);
+
+        let removed: Vec<Triple> = vec![
+            Triple {
+                subject: cmg.kg.dictionary.encode("f"),
+                predicate: cmg.kg.dictionary.encode("t"),
+                object: cmg.kg.dictionary.encode("b"),
+            },
+            Triple {
+                subject: cmg.kg.dictionary.encode("a"),
+                predicate: cmg.kg.dictionary.encode("t"),
+                object: cmg.kg.dictionary.encode("b"),
+            },
+        ];
+
+        let added: Vec<Triple> = vec![
+            Triple {
+                subject: cmg.kg.dictionary.encode("g"),
+                predicate: cmg.kg.dictionary.encode("t"),
+                object: cmg.kg.dictionary.encode("d"),
+            }
+        ];
+
+        cmg.maintenance_counting(added, removed);
+
+        let all_facts = cmg.kg.index_manager.query(None, None, None);
+        let mut readable_all_facts = Vec::new();
+
+        for triple in all_facts.clone() {
+                let subject = cmg.kg.dictionary.decode(triple.subject).unwrap();
+                let predicate = cmg.kg.dictionary.decode(triple.predicate).unwrap();
+                let object = cmg.kg.dictionary.decode(triple.object).unwrap();
+
+                readable_all_facts.push(format!("{} {} {}", subject, predicate, object));
+        }
+
+        println!("all facts: {:#?}", readable_all_facts);
+
+        cmg.print_trace();
+
     }
 }
