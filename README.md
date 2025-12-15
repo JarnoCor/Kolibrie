@@ -33,8 +33,10 @@ For more information about our research and ongoing projects, please visit the [
 - **Volcano Optimizer**: Incorporates a cost-based query optimizer based on the Volcano model to determine the most efficient execution plans.
 - **Reasoner**: Provides robust support for building and querying knowledge graphs, including ABox (instance-level) and TBox (schema-level) assertions, dynamic rule-based inference, and backward chaining.
 - **Streaming and Sliding Windows**: Handles timestamped triples and sliding window operations for time-based data analysis.
+- **Machine Learning Integration**: Seamlessly integrates with Python ML frameworks through PyO3 bindings.
 - **Extensible Dictionary Encoding**: Efficiently encodes and decodes RDF terms using a customizable dictionary.
 - **Comprehensive API**: Offers a rich set of methods for data manipulation, querying, and result processing.
+- **Support Python**
 
 > [!WARNING]
 > utilizing CUDA is experimental and under the development
@@ -542,6 +544,10 @@ Inferred 1 new facts
 Alice is ancestor of Charlie
 ```
 
+### Machine Learning Integration
+
+**All machine learning examples can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/tree/main/kolibrie/examples/sparql_syntax/combination)**.
+
 ## API Documentation
 
 ### `SparqlDatabase` Struct
@@ -934,6 +940,8 @@ Our benchmarks demonstrate Kolibrie's superior performance compared to other pop
 - Blazegraph and QLever show competitive performance on specific query patterns
 - Oxigraph (with RocksDB) demonstrates stable performance across all queries
 
+The running example can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/blob/main/kolibrie/examples/sparql_syntax/n_triples_data/n_triple_10M.rs)
+
 #### Deep Taxonomy - Reasoning over Hierarchy Depth
 
 ![Deep Taxonomy Reasoning Performance](docs/img/image2.png)
@@ -945,6 +953,8 @@ Our benchmarks demonstrate Kolibrie's superior performance compared to other pop
 - At 10K hierarchy levels, Kolibrie maintains sub-second response times
 - Superior performance compared to Apache Jena and EYE reasoner
 - Efficient handling of complex taxonomic structures
+
+The running example can be found [here](https://github.com/StreamIntelligenceLab/Kolibrie/blob/main/kolibrie/examples/sparql_syntax/knowledge_graph/deep_taxonomy.rs)
 
 ## How to Contribute
 

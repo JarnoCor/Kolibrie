@@ -25,6 +25,7 @@ impl CostConstants {
     pub const COST_PER_ROW_NESTED_LOOP: u64 = 10;
     pub const COST_PER_PROJECTION: u64 = 1;
     pub const COST_PER_ROW_OPTIMIZED_JOIN: u64 = 1;
+    pub const TUPLE_COST: u64 = 1;
 }
 
 /// Cost estimator for query optimization
@@ -122,15 +123,28 @@ impl<'a> CostEstimator<'a> {
                 let mut costs: Vec<u64> = patterns
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
-                    . collect();
+                    .collect();
 
                 costs.sort();
 
                 // Start with smallest, then check each remaining
                 let base_cost = costs[0] * CostConstants::COST_PER_ROW_INDEX_SCAN;
-                let filter_cost = costs. iter().skip(1).sum::<u64>() * CostConstants::COST_PER_ROW_INDEX_SCAN / 10;
+                let filter_cost = costs.iter().skip(1).sum::<u64>() * CostConstants::COST_PER_ROW_INDEX_SCAN / 10;
 
                 base_cost + filter_cost
+            }
+            PhysicalOperator::Subquery { inner, projected_vars } => {
+                let inner_cost = self.estimate_cost(inner);
+                let inner_card = self.estimate_output_cardinality(inner);
+                
+                // Materialization cost:  
+                // - Cost to execute inner query
+                // - Cost to store results (proportional to cardinality)
+                // - Small overhead for projection
+                let materialization_cost = inner_card * CostConstants::TUPLE_COST;
+                let projection_cost = inner_card * projected_vars.len() as u64;
+                
+                inner_cost + materialization_cost + projection_cost
             }
         }
     }
@@ -152,20 +166,20 @@ impl<'a> CostEstimator<'a> {
             (Term::Constant(s), Term::Variable(_), Term::Constant(o)) => {
                 // S*O pattern
                 self.stats.get_subject_cardinality(*s)
-                    .min(self.stats. get_object_cardinality(*o))
+                    .min(self.stats.get_object_cardinality(*o))
                     .max(1)
             }
 
             (Term::Variable(_), Term::Constant(p), Term::Constant(o)) => {
                 // *PO pattern
                 self.stats.get_predicate_cardinality(*p)
-                    .min(self. stats.get_object_cardinality(*o))
+                    .min(self.stats.get_object_cardinality(*o))
                     .max(1)
             }
 
             // One bound - use predicate/subject/object cardinality directly
             (Term::Constant(s), Term::Variable(_), Term::Variable(_)) => {
-                self. stats.get_subject_cardinality(*s). max(1)
+                self. stats.get_subject_cardinality(*s).max(1)
             }
 
             (Term::Variable(_), Term::Constant(p), Term::Variable(_)) => {
@@ -179,7 +193,7 @@ impl<'a> CostEstimator<'a> {
 
             // No bounds - full scan
             (Term::Variable(_), Term::Variable(_), Term::Variable(_)) => {
-                self. stats.total_triples
+                self.stats.total_triples
             }
         }
     }
@@ -293,7 +307,7 @@ impl<'a> CostEstimator<'a> {
                 let mut cardinalities: Vec<u64> = patterns
                     .iter()
                     .map(|p| self.estimate_cardinality(p))
-                    . collect();
+                    .collect();
 
                 if cardinalities.is_empty() {
                     return 0;
@@ -309,6 +323,10 @@ impl<'a> CostEstimator<'a> {
                 let filter_factor = 0.5_f64.powi((patterns.len() - 1) as i32);
 
                 ((base as f64 * filter_factor) as u64).max(1)
+            }
+            PhysicalOperator::Subquery { inner, .. } => {
+                // Subquery cardinality is the same as inner query
+                self.estimate_output_cardinality(inner)
             }
         }
     }
