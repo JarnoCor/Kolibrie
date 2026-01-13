@@ -314,15 +314,17 @@ impl Reasoner {
         let bindings = self.evaluate_rule_with_delta_improved(rule, &positive_facts, &positive_1);
 
         let mut results = Vec::new();
-        
-        for binding in bindings {
-            // check if the binding adheres to the filters of the rule
-            if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
-                for conclusion in &rule.conclusion {
-                    let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
 
-                    // the inferred triple should not be inside positive_2
-                    if !positive_2.contains(&inferred) {
+
+        for binding in bindings {
+            // check if the bindings are disjoint with positive_2 or not
+            if self.check_bindings(rule, &binding, positive_2) {
+                // check if the binding adheres to the filters of the rule
+                if evaluate_filters(&binding, &rule.filters, &self.dictionary) {
+                    for conclusion in &rule.conclusion {
+                        let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
+
+                        // println!("{}", self.decode_triple(&inferred));
                         results.push(inferred);
                     }
                 }
@@ -330,6 +332,61 @@ impl Reasoner {
         }
 
         results
+    }
+
+    fn check_bindings(&mut self, rule: &Rule, binding: &HashMap<String, u32>, positive: &HashSet<Triple>) -> bool {
+
+        for triple in &rule.premise {
+            let subject = match &triple.0{
+                Term::Variable(v) => {
+                    binding.get(v).copied().unwrap_or_else(|| {
+                        eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
+                        0
+                    })
+                },
+                Term::Constant(c) => *c,
+            };
+
+            let predicate = match &triple.1 {
+                Term::Variable(v) => {
+                    self.dictionary.encode(v)
+                },
+                Term::Constant(c) => *c,
+            };
+
+            let object = match &triple.2 {
+                Term::Variable(v) => {
+                    // Check if this variable is bound in the current context
+                    if let Some(&bound_value) = binding.get(v) {
+                        bound_value
+                    } else {
+                        // If not bound, create a new placeholder in the dictionary
+                        self.dictionary.encode(&format!("ml_output_placeholder_{}", v))
+                    }
+                },
+                Term::Constant(c) => *c,
+            };
+
+            let constructed = Triple {
+                subject,
+                predicate,
+                object,
+            };
+
+            if positive.contains(&constructed) {
+                return true;
+            }
+    }
+
+    false
+    }
+
+    pub fn decode_triple(&self, triple: &Triple) -> String {
+        let subject = self.dictionary.decode(triple.subject).unwrap_or("unknown");
+        let predicate = self.dictionary.decode(triple.predicate).unwrap_or("unknown");
+        let object = self.dictionary.decode(triple.object).unwrap_or("unknown");
+
+        format!("{} {} {}", subject, predicate, object)
     }
 
     pub fn infer_new_facts_semi_naive_parallel(&mut self) -> Vec<Triple> {
