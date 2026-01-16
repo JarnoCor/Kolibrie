@@ -324,7 +324,6 @@ impl Reasoner {
                     for conclusion in &rule.conclusion {
                         let inferred = construct_triple(conclusion, &binding, &mut self.dictionary);
 
-                        // println!("{}", self.decode_triple(&inferred));
                         results.push(inferred);
                     }
                 }
