@@ -133,6 +133,7 @@ impl<'a> CostEstimator<'a> {
 
                 base_cost + filter_cost
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
             PhysicalOperator::Subquery { inner, projected_vars } => {
                 let inner_cost = self.estimate_cost(inner);
                 let inner_card = self.estimate_output_cardinality(inner);
@@ -169,6 +170,22 @@ impl<'a> CostEstimator<'a> {
                 // VALUES has minimal cost - just the number of rows
                 // No I/O or computation, just materializing the constant values
                 (values.len() as u64) * CostConstants::TUPLE_COST
+            }
+            PhysicalOperator::MLPredict {
+                input,
+                input_variables,
+                ..
+            } => {
+                let input_cost = self.estimate_cost(input);
+                let cardinality = self.estimate_output_cardinality(input);
+                
+                // ML prediction is expensive:
+                // - Python interop overhead: 1000 per call
+                // - Per-row prediction cost: 100 * number of features
+                let python_overhead = 1000;
+                let per_row_cost = 100 * input_variables.len() as u64;
+                
+                input_cost + python_overhead + (cardinality * per_row_cost)
             }
         }
     }
@@ -348,6 +365,7 @@ impl<'a> CostEstimator<'a> {
 
                 ((base as f64 * filter_factor) as u64).max(1)
             }
+            PhysicalOperator::InMemoryBuffer { .. } => {0}
             PhysicalOperator::Subquery { inner, .. } => {
                 // Subquery cardinality is the same as inner query
                 self.estimate_output_cardinality(inner)
@@ -359,6 +377,10 @@ impl<'a> CostEstimator<'a> {
             PhysicalOperator::Values { values, .. } => {
                 // Cardinality is simply the number of value rows
                 values.len() as u64
+            }
+            PhysicalOperator::MLPredict { input, .. } => {
+                // ML.PREDICT doesn't change cardinality, just adds a column
+                self.estimate_output_cardinality(input)
             }
         }
     }
