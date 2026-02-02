@@ -9,8 +9,8 @@
  */
 
 use crate::sparql_database::SparqlDatabase;
-use crate::volcano_optimizer::*;
-use crate::custom_error::format_parse_error;
+use crate::streamertail_optimizer::*;
+use crate::error_handler::format_parse_error;
 use crate::parser::*;
 use shared::query::*;
 use shared::triple::Triple;
@@ -428,12 +428,12 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters,
                 &prefixes,
                 database,
-                binds.clone(),
+                &binds,
                 values_clause.as_ref(),
             );
 
             let stats = database.cached_stats.as_ref().expect("Error");
-            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
             let _optimized_plan = optimizer.find_best_plan(&logical_plan);
 
             #[cfg(feature = "cuda")]
@@ -537,7 +537,7 @@ pub fn execute_query_rayon_parallel2_volcano(
                 filters.clone(),
                 &prefixes,
                 database,
-                binds.clone(),
+                &binds,
                 values_clause.as_ref(),
             ); 
 
@@ -554,14 +554,14 @@ pub fn execute_query_rayon_parallel2_volcano(
             }
 
             let stats = database.cached_stats.as_ref().expect("AAA");
-            let mut optimizer = VolcanoOptimizer::with_cached_stats(stats.clone());
+            let mut optimizer = Streamertail::with_cached_stats(stats.clone());
 
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
             let results = optimized_plan.execute(database);
             /*if let Ok(report) = guard.report().build() {
-                let file = std::fs::File::create("volcano_optimizer_flamegraph.svg").unwrap();
+                let file = std::fs::File::create("streamertail_optimizer_flamegraph.svg").unwrap();
                 report.flamegraph(file).unwrap();
-                println!("Volcano optimizer flamegraph saved to: volcano_optimizer_flamegraph. svg");
+                println!("Volcano optimizer flamegraph saved to: streamertail_optimizer_flamegraph. svg");
             }*/
 
             // Convert results to owned strings first to avoid lifetime issues
@@ -621,7 +621,12 @@ pub fn execute_query_rayon_parallel2_volcano(
             return format_results(final_results, &selected_variables);
         }
     } else {
-        eprintln!("Failed to parse the query.");
+        if let Err(err) = parse_result {
+            let error_message = format_parse_error(sparql, err);
+            eprintln!("{}", error_message);
+        } else {
+            eprintln! ("Failed to parse the query with an unknown error.");
+        }
         return Vec::new();
     }
 }
@@ -637,12 +642,19 @@ fn format_results(
             selected_variables
                 .iter()
                 .map(|(_, var)| {
-                    let var_name = if var.starts_with('?') {
-                        var
-                    } else {
-                        &format!("?{}", var)
-                    };
-                    result.get(var_name.as_str()).cloned().unwrap_or_default()
+                    // Strip '?' prefix from the variable we're looking for
+                    let var_stripped = var.strip_prefix('?').unwrap_or(var);
+                    
+                    // Try multiple lookup strategies
+                    result.get(var_stripped)           // without prefix
+                        .or_else(|| result.get(var.as_str()))  // with prefix
+                        .or_else(|| {
+                            // Try with ? added if not present
+                            let with_prefix = format!("?{}", var_stripped);
+                            result.get(with_prefix.as_str())
+                        })
+                        .cloned()
+                        .unwrap_or_default()
                 })
                 .collect()
         })

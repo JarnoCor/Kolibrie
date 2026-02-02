@@ -9,7 +9,7 @@
  */
 
 use super::super::Condition;
-use shared::terms::TriplePattern;
+use shared::terms::{Bindings, TriplePattern};
 
 /// Physical operators represent the actual execution plan after optimization
 #[derive(Debug, Clone)]
@@ -48,6 +48,10 @@ pub enum PhysicalOperator {
         input: Box<PhysicalOperator>,
         variables: Vec<String>,
     },
+    InMemoryBuffer{
+        content: Bindings,
+        origin: String
+    },
     Subquery {
         inner: Box<PhysicalOperator>,
         projected_vars:  Vec<String>,
@@ -61,6 +65,13 @@ pub enum PhysicalOperator {
     Values {
         variables: Vec<String>,
         values: Vec<Vec<Option<String>>>,
+    },
+    MLPredict {
+        input: Box<PhysicalOperator>,
+        model_name: String,
+        model_path: String,
+        input_variables: Vec<String>,
+        output_variable: String,
     },
 }
 
@@ -123,6 +134,10 @@ impl PhysicalOperator {
         }
     }
 
+    pub fn buffer(content: Bindings, origin: String)-> Self {
+        Self::InMemoryBuffer {content, origin}
+    }
+
     /// Creates a new subquery physical operator
     pub fn subquery(inner: PhysicalOperator, projected_vars: Vec<String>) -> Self {
         Self::Subquery {
@@ -149,6 +164,23 @@ impl PhysicalOperator {
     /// Creates a new values physical operator
     pub fn values(variables: Vec<String>, values: Vec<Vec<Option<String>>>) -> Self {
         Self::Values { variables, values }
+    }
+
+    /// Creates a new ML.PREDICT physical operator
+    pub fn ml_predict(
+        input: PhysicalOperator,
+        model_name: String,
+        model_path: String,
+        input_variables: Vec<String>,
+        output_variable: String,
+    ) -> Self {
+        Self::MLPredict {
+            input: Box::new(input),
+            model_name,
+            model_path,
+            input_variables,
+            output_variable,
+        }
     }
 
     /// Executes the physical operator and returns string-based results
