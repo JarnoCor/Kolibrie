@@ -11,10 +11,10 @@ pub type Multiset = HashMap<Triple, u32>;
 
 /// A struct for incremental view maintenance (IVM) using the counting-based approach.
 ///
-/// Contains the [`Reasoner`] to perform IVM on, as well as the trace.
+/// Contains the [`Reasoner`] to perform IVM on, as well as the trace. The first multiset of the trace contains the explicit facts.
 pub struct CountingMaintenance {
-    /// The [`Reasoner`] containing the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) to perform incremental view maintenance on.
-    pub reasoner:Reasoner,
+    /// The [`Reasoner`] containing the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) to perform IVM on.
+    pub reasoner: Reasoner,
     /// The trace containing a multiset of derived facts for each iteration.
     pub trace: Vec<Multiset>,
 }
@@ -32,10 +32,7 @@ impl From<Reasoner> for CountingMaintenance {
 impl CountingMaintenance {
     /// Creates a new [`CountingMaintenance`] instance with a new [`Reasoner`] and an empty trace.
     pub fn new() -> CountingMaintenance {
-        CountingMaintenance {
-            reasoner:Reasoner::new(),
-            trace: Vec::new()
-        }
+        CountingMaintenance { reasoner:Reasoner::new(), trace: Vec::new() }
     }
 
     /// The counting version of the semi-naive materialisation algorithm.
