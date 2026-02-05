@@ -5,6 +5,7 @@
 //! More methods are coming soon.
 
 mod counting;
+mod dred;
 
 pub use counting::CountingMaintenance;
 pub use counting::Multiset;
