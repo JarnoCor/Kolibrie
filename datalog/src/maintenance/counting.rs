@@ -2,337 +2,424 @@ use crate::reasoning::{Reasoner, construct_triple};
 use crate::reasoning::{evaluate_filters};
 
 use shared::triple::Triple;
-use std::collections::{/*BTreeMap, */HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
+/// Alias for a [`HashMap`] containing pairs of [`Triple`] and [`u32`].
+/// 
+/// This makes types and function signatures more readable.
+pub type Multiset = HashMap<Triple, u32>;
 
-/// A wrapper struct to keep track of the trace.
-/// Contains methods for counting incremental view maintenance.
-pub struct CountingMaintenanceGraph {
-    /// The knowledge graph to perform incremental view maintenance on
-    pub kg:Reasoner,
-    /// The trace
-    pub trace: Vec<HashMap<Triple, u32>>,
+/// A struct for incremental view maintenance (IVM) using the counting-based approach.
+///
+/// Contains the [`Reasoner`] to perform IVM on, as well as the trace.
+pub struct CountingMaintenance {
+    /// The [`Reasoner`] containing the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) to perform incremental view maintenance on.
+    pub reasoner:Reasoner,
+    /// The trace containing a multiset of derived facts for each iteration.
+    pub trace: Vec<Multiset>,
 }
 
-impl CountingMaintenanceGraph {
-    pub fn new() -> CountingMaintenanceGraph {
-        CountingMaintenanceGraph {
-            kg:Reasoner::new(),
-            trace: Vec::new(),
+impl From<Reasoner> for CountingMaintenance {
+    /// Creates a new [`CountingMaintenance`] with an empty trace from an existing [`Reasoner`].
+    fn from(reasoner: Reasoner) -> CountingMaintenance {
+        CountingMaintenance {
+            reasoner,
+            trace: Vec::new()
+        }
+    }
+}
+
+impl CountingMaintenance {
+    /// Creates a new [`CountingMaintenance`] instance with a new [`Reasoner`] and an empty trace.
+    pub fn new() -> CountingMaintenance {
+        CountingMaintenance {
+            reasoner:Reasoner::new(),
+            trace: Vec::new()
         }
     }
 
-
+    /// The counting version of the semi-naive materialisation algorithm.
+    ///
+    /// Returns a [`Vec`] containing the implicit facts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shared::{rule::Rule, terms::Term, triple::Triple};
+    /// use datalog::maintenance::CountingMaintenance;
+    ///
+    /// let mut counting_maintenance = CountingMaintenance::new();
+    /// counting_maintenance.reasoner.add_abox_triple("a", "knows", "b");
+    ///
+    /// counting_maintenance.reasoner.add_rule(Rule {
+    ///     premise: vec![
+    ///     (
+    ///         Term::Variable("x".to_string()),
+    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Variable("y".to_string()),
+    ///     ),
+    ///     ],
+    ///     conclusion: vec![(
+    ///         Term::Variable("y".to_string()),
+    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Variable("x".to_string()),
+    ///     )],
+    ///     filters: vec![],
+    /// });
+    ///
+    /// let inferred: Vec<Triple> = counting_maintenance.semi_naive_counting();
+    ///
+    /// assert_eq!(counting_maintenance.decode_triple(&inferred[0]), String::from("b knows a"));
+    /// ```
     pub fn semi_naive_counting(&mut self) -> Vec<Triple> {
+        // get all facts currently in the index manager
+        let mut all_facts: HashSet<Triple> = self.reasoner.index_manager.query(None, None, None).into_iter().collect();
 
-        // initialisaties
-        let all_initial: HashSet<Triple> = self.kg.index_manager.query(None, None, None).into_iter().collect();
-        let mut all_facts: HashSet<Triple> = all_initial.iter().cloned().collect();
+        // this is a multiset containing which facts were derived how many times at each iteration
+        let mut counts: Multiset = HashMap::new();
+        counts.extend(all_facts.iter().cloned().map(|k| (k, 1)));
 
-        let mut counts = HashMap::new();
-        counts.extend(all_initial.clone().into_iter().map(|k| (k, 1)));
-
-        let mut inferred_so_far = Vec::new();
-
-        let mut big_i = HashSet::new();
+        let mut inferred_so_far: Vec<Triple> = Vec::new();
+        let mut dataset_so_far: HashSet<Triple> = HashSet::new();
+        let mut delta: HashSet<Triple>;
 
         loop {
-            let mut delta: HashSet<Triple> = counts.keys().cloned().collect();
-            delta = delta.difference(&big_i).cloned().collect();
+            // calculate changes from the previous iterations
+            delta = counts.keys().cloned().collect();
+            delta = delta.difference(&dataset_so_far).cloned().collect();
 
+            // add the multiset of iteration i to the trace
             self.trace.push(counts);
 
+            // if there are no changes, stop
             if delta.is_empty() {
                 break;
             }
 
-            big_i = big_i.union(&delta).cloned().collect();
+            // update the dataset seen so far
+            dataset_so_far = dataset_so_far.union(&delta).cloned().collect();
 
             counts = HashMap::new();
 
-            for rule in self.kg.rules.clone() {
+            let mut bindings: Vec<HashMap<String, u32>>;
+            let mut inferred: Triple;
+
+            for rule in self.reasoner.rules.clone() {
                 // evaluate the rule using the facts in delta
-                let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &all_facts.iter().cloned().collect(), &Vec::from_iter(delta.clone()));
+                bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &all_facts.iter().cloned().collect(), &Vec::from_iter(delta.clone()));
 
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
-                    if evaluate_filters(&binding, &rule.filters, &self.kg.dictionary) {
+                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
+
                         for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding, &mut self.kg.dictionary);
+                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
 
                             // update the count of the inferred triple, or insert the triple with multiplicity 1 if it was not present
                             counts.entry(inferred.clone()).and_modify(|count| *count += 1).or_insert(1);
 
+                            // if the inferred triple is a new fact, add it to all facts and to the the index manager
                             if !all_facts.contains(&inferred) {
                                 all_facts.insert(inferred.clone());
                                 inferred_so_far.push(inferred.clone());
-                                self.kg.index_manager.insert(&inferred);
+
+                                // add the inferred triple to the index manager
+                                self.reasoner.index_manager.insert(&inferred);
                             }
                         }
                     }
                 }
-            }        }
+            }
+        }
 
+        // return the facts that were implicitly added to the index manager
         inferred_so_far
     }
 
-
-    // pub fn semi_naive_counting(&mut self) -> Vec<Triple> {
-    //     // begin N = originele feiten + toepassen van regels = inferred_so_far
-
-    //     // initialisaties
-    //     let all_initial = self.kg.index_manager.query(None, None, None);
-    //     let mut all_facts: HashSet<Triple> = all_initial.iter().cloned().collect();
-
-    //     let mut counts = HashMap::new();
-    //     counts.extend(all_initial.clone().into_iter().map(|k| (k, 1)));
-
-    //     let mut delta = all_initial;
-    //     let mut inferred_so_far = Vec::new();
-
-    //     loop {
-
-    //         let mut new_delta = HashSet::new();
-
-
-
-    //         // paper: eerst alle rule instances toevoegen, en daarna degenen die we al hadden wegdoen
-    //         // praktijk: voor het toevoegen van rule instances, kijken of ze er al inzitten
-
-    //         // delta berekenen
-    //         for rule in self.kg.rules.clone() {
-    //             // evaluate the rule using the facts in delta
-    //             let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &all_facts.iter().cloned().collect(), &delta);
-
-    //             for binding in bindings {
-    //                 // check if the binding adheres to the filters of the rule
-    //                 if evaluate_filters(&binding, &rule.filters, &self.kg.dictionary) {
-    //                     for conclusion in &rule.conclusion {
-    //                         let inferred = construct_triple(conclusion, &binding, &mut self.kg.dictionary);
-                            
-    //                         // update the count of the inferred triple, or insert the triple with multiplicity 1 if it was not present
-    //                         counts.entry(inferred.clone()).and_modify(|count| *count += 1).or_insert(1);
-
-    //                         if !all_facts.contains(&inferred) {
-    //                             new_delta.insert(inferred.clone());
-    //                             self.kg.index_manager.insert(&inferred);
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         }
-
-
-    //         // delta leeg -> stop
-    //         if new_delta.is_empty() {
-    //             break;
-    //         }
-
-    //         self.trace.push(counts);
-
-    //         // add delta to inferred_so_far
-    //         for fact in &new_delta {
-    //             all_facts.insert(fact.clone());
-    //             inferred_so_far.push(fact.clone());
-    //         }
-
-    //         delta = new_delta.iter().cloned().collect();
-
-    //         counts = HashMap::new();
-
-    //     }
-
-    //     inferred_so_far
-    // }
-
+    /// Performs IVM to update the facts in the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) of the [`Reasoner`] by adding and removing explicit and implicit facts using a counting based approach.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shared::{rule::Rule, terms::Term, triple::Triple};
+    /// use datalog::maintenance::CountingMaintenance;
+    ///
+    /// let mut counting_maintenance = CountingMaintenance::new();
+    /// counting_maintenance.reasoner.add_abox_triple("a", "knows", "b");
+    ///
+    /// counting_maintenance.reasoner.add_rule(Rule {
+    ///     premise: vec![
+    ///     (
+    ///         Term::Variable("x".to_string()),
+    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Variable("y".to_string()),
+    ///     ),
+    ///     ],
+    ///     conclusion: vec![(
+    ///         Term::Variable("y".to_string()),
+    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Variable("x".to_string()),
+    ///     )],
+    ///     filters: vec![],
+    /// });
+    ///
+    /// let _ = counting_maintenance.semi_naive_counting();
+    /// 
+    /// let to_add: Vec<Triple> = Vec::new();
+    /// let to_remove: Vec<Triple> = vec![
+    ///     Triple {
+    ///         subject: counting_maintenance.reasoner.dictionary.encode("a"),
+    ///         predicate: counting_maintenance.reasoner.dictionary.encode("knows"),
+    ///         object: counting_maintenance.reasoner.dictionary.encode("b"),
+    ///     }
+    /// ];
+    ///
+    /// counting_maintenance.maintenance_counting(to_add, to_remove);
+    ///
+    /// let all_facts: Vec<Triple> = counting_maintenance.reasoner.index_manager.query(None, None, None);
+    ///
+    /// assert!(all_facts.is_empty());
+    /// ```
     pub fn maintenance_counting(&mut self, added_facts: Vec<Triple>, removed_facts: Vec<Triple>) {
-        let mut i_o: HashSet<Triple> = HashSet::new();
-        let mut i_n: HashSet<Triple> = HashSet::new();
-        let mut i_no: HashSet<Triple> = HashSet::new();
-        let mut i_on: HashSet<Triple> = HashSet::new();
+        let mut i_o: HashSet<Triple> = HashSet::new(); // the old dataset, updated per iteration
+        let mut i_n: HashSet<Triple> = HashSet::new(); // the new dataset, updated per iteration
+        let mut i_no: HashSet<Triple> = HashSet::new(); // facts that are in the new but not in the old dataset
+        let mut i_on: HashSet<Triple> = HashSet::new(); // facts that are in the old but not in the new dataset
 
+        // tracks the current iteration
         let mut i = 0;
 
-        let mut n_o = self.trace[i].clone();
+        // contains multiset i of the old trace
+        let mut n_o: Multiset = self.trace[i].clone();
 
-        // these are used to know which triples were added and which were removed after the materialization,
-        // so we can update the index manager appropriately
-        // let mut added_triples: HashSet<Triple> = HashSet::new();
-        // let mut removed_triples: HashSet<Triple> = HashSet::new();
-
+        // update the i-th multiset of the trace
         multiset_add(&mut self.trace[i], added_facts);
         multiset_subtract(&mut self.trace[i], removed_facts);
 
-
+        // contains multiset i of the new trace
         let mut n_n = &self.trace[i];
 
-        let mut delta_o: HashSet<Triple>;
-        let mut delta_n: HashSet<Triple>;
+        // the deltas track new changes throughout iterations, for the old and new trace respectively
+        let mut delta_old: HashSet<Triple>;
+        let mut delta_new: HashSet<Triple>;
 
         loop {
+            // calculate the delta using the old trace
+            delta_old = n_o.keys().cloned().collect();
+            delta_old = delta_old.difference(&i_o).cloned().collect();
 
-            delta_o = n_o.keys().cloned().collect();
-            delta_o = delta_o.difference(&i_o).cloned().collect();
+            // calculate the delta using the new trace
+            delta_new = n_n.keys().cloned().collect();
+            delta_new = delta_new.difference(&i_n).cloned().collect();
 
-
-            delta_n = n_n.keys().cloned().collect();
-            delta_n = delta_n.difference(&i_n).cloned().collect();
-
-
-            if delta_o.is_empty() && delta_n.is_empty() {
+            // if there is no change in both the old and new trace, stop
+            if delta_old.is_empty() && delta_new.is_empty() {
                 break;
             }
 
-            i_o = i_o.union(&delta_o).cloned().collect();
-            i_n = i_n.union(&delta_n).cloned().collect();
+            // update the new and old datasets
+            i_o = i_o.union(&delta_old).cloned().collect();
+            i_n = i_n.union(&delta_new).cloned().collect();
 
+            // helper variables to make calculation with multiple steps more readable
+            let mut diff1: HashSet<Triple>;
+            let mut diff2: HashSet<Triple>;
 
-            let mut diff1: HashSet<Triple> = i_on.difference(&delta_n).cloned().collect();
-            let mut diff2: HashSet<Triple> = delta_o.difference(&i_n).cloned().collect();
+            // calculate which facts no longer hold
+            diff1 = i_on.difference(&delta_new).cloned().collect();
+            diff2 = delta_old.difference(&i_n).cloned().collect();
 
             i_on = diff1.union(&diff2).cloned().collect();
 
-            diff1 = i_no.difference(&delta_o).cloned().collect();
-            diff2 = delta_n.difference(&i_o).cloned().collect();
+            // calculate which facts did not hold previously
+            diff1 = i_no.difference(&delta_old).cloned().collect();
+            diff2 = delta_new.difference(&i_o).cloned().collect();
 
             i_no = diff1.union(&diff2).cloned().collect();
 
-
-            if delta_o.difference(&delta_n).next() == None && i_on.is_empty() && i_no.is_empty() {
+            // if the old and new deltas are equal and nothing changes between the old and new trace, we can stop early
+            if delta_old.difference(&delta_new).next() == None && i_on.is_empty() && i_no.is_empty() {
                 break;
             }
 
             i += 1;
 
+            // check if the trace contains a multiset for the next iteration, and add it if necessary
             if let None = self.trace.get(i) {
                 self.trace.push(HashMap::new());
             }
 
+            // contains multiset i of the old trace
             n_o = self.trace[i].clone();
 
+            /*
+            now we calculate which facts no longer hold and thus should be deleted
+            there are two parts in this formula:
+                1. facts that are derived from applying rules to the old dataset, where at least one body atom that is in the old delta, and at least one body atom that is in the old dataset but not in the new one was used to derive the fact
+                2. facts that are derived from applying rules to the first symmetric difference as calculated below, where at least one body atom that is in either the new or old dataset, and at least one body atom that is in the second symmetric differnce was used to derive the fact
+            */
 
-            let symm_dif: Vec<Triple> = i_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_n).cloned().collect();
-            let delta: Vec<Triple> = delta_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_n).cloned().collect();
+            // calculate the symmetric differences, this is for the second part of the task described above
+            let symm_diff1: Vec<Triple> = i_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_new).cloned().collect();
+            let symm_diff2: Vec<Triple> = delta_old.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_new).cloned().collect();
 
-            let mut removed_this_iteration = Vec::new();
+            let mut removed_this_iteration: Vec<Triple> = Vec::new();
+            let mut bindings: Vec<HashMap<String, u32>>;
+            let mut inferred: Triple;
 
-            for rule in self.kg.rules.clone() {
-                let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &symm_dif, &delta);
+            // for each rule, calculate which facts are no longer derived from it
+            for rule in self.reasoner.rules.clone() {
+                // this is the first part of the task as described above
+                removed_this_iteration.extend(self.reasoner.evaluate_rule_with_restrictions(&rule, &i_o, &delta_old, &i_on).into_iter());
 
+                // this is the second part of the task as described above
+                bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &symm_diff1, &symm_diff2);
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
-                    if evaluate_filters(&binding, &rule.filters, &self.kg.dictionary) {
-                        for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding, &mut self.kg.dictionary);
+                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
 
+                        for conclusion in &rule.conclusion {
+                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
                             removed_this_iteration.push(inferred);
                         }
                     }
                 }
 
-                removed_this_iteration.extend(self.kg.evaluate_rule_with_restrictions(&rule, &i_o, &delta_o, &i_on).into_iter());
             }
 
+            /*
+            now we calculate which facts newly hold and thus should be added
+            there are two parts in this formula:
+                1. facts that are derived from applying rules to the new dataset, where at least one body atom that is in the new delta, and at least one body atom that is in the new dataset but not in the old one was used to derive the fact
+                2. facts that are derived from applying rules to the first symmetric difference as calculated below, where at least one body atom that is in either the new or old dataset, and at least one body atom that is in the second symmetric differnce was used to derive the fact
+            */
 
-            multiset_subtract(&mut self.trace[i], removed_this_iteration);
+            // calculate the symmetric differences, this is for the second part of the task described above
+            let symm_diff1: Vec<Triple> = i_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_old).cloned().collect();
+            let symm_diff2: Vec<Triple> = delta_new.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_old).cloned().collect();
 
+            let mut added_this_iteration: Vec<Triple> = Vec::new();
+            let mut bindings: Vec<HashMap<String, u32>>;
+            let mut inferred: Triple;
 
+            // for each rule, calculate which facts are newly derived from it
+            for rule in self.reasoner.rules.clone() {
+                // this is the first part of the task as described above
+                added_this_iteration.extend(self.reasoner.evaluate_rule_with_restrictions(&rule, &i_n, &delta_new, &i_no).into_iter());
 
-
-
-            let symm_dif: Vec<Triple> = i_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_o).cloned().collect();
-            let delta: Vec<Triple> = delta_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_o).cloned().collect();
-
-            let mut added_this_iteration = Vec::new();
-
-            for rule in self.kg.rules.clone() {
-                let bindings = self.kg.evaluate_rule_with_delta_improved(&rule, &symm_dif, &delta);
-
+                // this is the second part of the task as described above
+                bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &symm_diff1, &symm_diff2);
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
-                    if evaluate_filters(&binding, &rule.filters, &self.kg.dictionary) {
-                        for conclusion in &rule.conclusion {
-                            let inferred = construct_triple(conclusion, &binding, &mut self.kg.dictionary);
+                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
 
+                        for conclusion in &rule.conclusion {
+                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
                             added_this_iteration.push(inferred);
                         }
                     }
                 }
 
-                added_this_iteration.extend(self.kg.evaluate_rule_with_restrictions(&rule, &i_n, &delta_n, &i_no).into_iter());
             }
 
+            // update the i-th multiset of the trace
+            multiset_subtract(&mut self.trace[i], removed_this_iteration);
             multiset_add(&mut self.trace[i], added_this_iteration);
 
+            // contains multiset i of the new trace
             n_n = &self.trace[i];
-
-
         }
 
-        // the algorithm has ended, now we update the knowledge graph's index manager
+        // the algorithm has ended, now we update the index manager containing the facts
 
-        // collect all facts in the new materialisation
-        // let mut unique_triples = HashSet::new();
-
-        // for map in &self.trace {
-        //     for key in map.keys().cloned() {
-        //         unique_triples.insert(key);
-        //     }
-        // }
-
-        // let materialisation: Vec<Triple>  = unique_triples.into_iter().collect();
-
-        // self.kg.index_manager.clear();
-        // self.kg.index_manager.build_from_triples(&materialisation);
-
+        // remove facts that no longer hold
         for triple in i_on {
-            self.kg.index_manager.delete(&triple);
+            self.reasoner.index_manager.delete(&triple);
         }
 
+        // add facts that have been newly derived
         for triple in i_no {
-            self.kg.index_manager.insert(&triple);
+            self.reasoner.index_manager.insert(&triple);
         }
     }
 
+    /// Decodes a triple into human-readable format using the [`Reasoner`]'s dictionary.
+    /// This is useful when printing a triple for debugging purposes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shared::triple::Triple;
+    /// use datalog::maintenance::CountingMaintenance;
+    ///
+    /// let mut counting_maintenance = CountingMaintenance::new();
+    /// counting_maintenance.reasoner.add_abox_triple("a", "edge", "b");
+    ///
+    /// let triple = &counting_maintenance.reasoner.index_manager.query(None, None, None)[0];
+    ///
+    /// assert_eq!(counting_maintenance.decode_triple(triple), String::from("a edge b"));
+    /// ```
+    pub fn decode_triple(&self, triple: &Triple) -> String {
+        let subject = self.reasoner.dictionary.decode(triple.subject).unwrap_or("unknown");
+        let predicate = self.reasoner.dictionary.decode(triple.predicate).unwrap_or("unknown");
+        let object = self.reasoner.dictionary.decode(triple.object).unwrap_or("unknown");
+
+        format!("{} {} {}", subject, predicate, object)
+    }
+
+    /// Decodes the trace into human-readable format.
     pub fn decode_trace(&self) -> Vec<HashMap<String, u32>> {
         let mut trace = Vec::new();
 
         for counts in &self.trace {
-
             let mut decoded = HashMap::new();
+
             for (key, value) in counts {
-
-                let subject = self.kg.dictionary.decode(key.subject).unwrap_or("unknown");
-                let predicate = self.kg.dictionary.decode(key.predicate).unwrap_or("unknown");
-                let object = self.kg.dictionary.decode(key.object).unwrap_or("unknown");
-
-                decoded.insert(format!("{} {} {}", subject, predicate, object), value.to_owned());
+                let decoded_triple = self.decode_triple(key);
+                decoded.insert(decoded_triple, value.to_owned());
             }
 
             trace.push(decoded)
         }
 
-
         trace
     }
 
-    pub fn decode_triple(&self, triple: &Triple) -> String {
-        let subject = self.kg.dictionary.decode(triple.subject).unwrap_or("unknown");
-        let predicate = self.kg.dictionary.decode(triple.predicate).unwrap_or("unknown");
-        let object = self.kg.dictionary.decode(triple.object).unwrap_or("unknown");
-
-        format!("{} {} {}", subject, predicate, object)
-    }
-
+    /// Prints the trace in a human-readable format.
     pub fn print_trace(&self) {
         let decoded = self.decode_trace();
         println!("{:#?}", decoded);
     }
 }
 
-
-
-pub fn multiset_add(multiset: &mut HashMap<Triple, u32>, added: Vec<Triple>) -> Vec<Triple> {
+/// Increases the count of elements in a multiset by the amount of times the element appears in the [`Vec`].
+///
+/// Elements that were not previously present are added to the multiset and returned.
+///
+/// # Examples
+///
+/// ```
+/// use shared::triple::Triple;
+/// use std::collections::HashMap;
+/// use datalog::maintenance::{Multiset, multiset_add};
+///
+/// let mut multiset: Multiset = HashMap::from([
+///     (Triple { subject: 1, predicate: 2, object: 3}, 1)
+/// ]);
+///
+/// let triples: Vec<Triple> = vec![
+///     Triple { subject: 1, predicate: 2, object: 3 },
+///     Triple { subject: 1, predicate: 2, object: 3 },
+///     Triple { subject: 3, predicate: 4, object: 1 },
+/// ];
+///
+/// let added: Vec<Triple> = multiset_add(&mut multiset, triples);
+///
+/// assert_eq!(added, vec![Triple { subject: 3, predicate: 4, object: 1 }]);
+/// assert_eq!(multiset.get(&Triple { subject: 1, predicate: 2, object: 3}), Some(&3));
+/// assert_eq!(multiset.get(&Triple { subject: 3, predicate: 4, object: 1}), Some(&1));
+/// ```
+pub fn multiset_add(multiset: &mut Multiset, added: Vec<Triple>) -> Vec<Triple> {
     let mut new = Vec::new();
 
     for triple in added {
@@ -346,7 +433,35 @@ pub fn multiset_add(multiset: &mut HashMap<Triple, u32>, added: Vec<Triple>) -> 
     new
 }
 
-pub fn multiset_subtract(multiset: &mut HashMap<Triple, u32>, subtracted: Vec<Triple>) -> Vec<Triple> {
+/// Subtracts the count of elements in a multiset by the amount of times the element appears in the [`Vec`].
+///
+/// Elements whose count reaches 0 or less are removed from the multiset and returned.
+///
+/// # Examples
+///
+/// ```
+/// use shared::triple::Triple;
+/// use std::collections::HashMap;
+/// use datalog::maintenance::{Multiset, multiset_subtract};
+///
+/// let mut multiset: Multiset = HashMap::from([
+///     (Triple { subject: 1, predicate: 2, object: 3}, 2),
+///     (Triple { subject: 3, predicate: 4, object: 1}, 3)
+/// ]);
+///
+/// let triples: Vec<Triple> = vec![
+///     Triple { subject: 1, predicate: 2, object: 3 },
+///     Triple { subject: 1, predicate: 2, object: 3 },
+///     Triple { subject: 3, predicate: 4, object: 1 },
+/// ];
+///
+/// let removed: Vec<Triple> = multiset_subtract(&mut multiset, triples);
+///
+/// assert_eq!(removed, vec![Triple { subject: 1, predicate: 2, object: 3 }]);
+/// assert_eq!(multiset.get(&Triple { subject: 1, predicate: 2, object: 3}), None);
+/// assert_eq!(multiset.get(&Triple { subject: 3, predicate: 4, object: 1}), Some(&2));
+/// ```
+pub fn multiset_subtract(multiset: &mut Multiset, subtracted: Vec<Triple>) -> Vec<Triple> {
     let mut removed = Vec::new();
 
     for triple in subtracted {
@@ -378,9 +493,22 @@ mod tests {
     use shared::rule::Rule;
     use std::time::Instant;
 
+
+    #[test]
+    fn new_from_test() {
+        let mut reasoner = Reasoner::new();
+        reasoner.add_abox_triple("a", "edge", "b");
+
+        let counting_maintenance = CountingMaintenance::from(reasoner);
+        let triples = counting_maintenance.reasoner.index_manager.query(None, None, None);
+
+        assert_eq!(counting_maintenance.trace.is_empty(), true);
+        assert_eq!(triples.len(), 1);
+    }
+
     #[test]
     fn multiset_add_test() {
-        let mut multiset = HashMap::new();
+        let mut multiset: Multiset = HashMap::new();
 
         let triples = vec![
             Triple { subject: 1, predicate: 2, object: 3 },
@@ -424,7 +552,7 @@ mod tests {
 
     #[test]
     fn semi_naive_counting_transitivity_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut counting_maintenance = CountingMaintenance::new();
 
         // println!("Explicit facts: [");
 
@@ -433,28 +561,28 @@ mod tests {
         let object = format!("person{}", (i + 1) % 5); // Wraps around to connect the last person with the first
 
         // println!("    \"{} likes {}\",", subject, object);
-        cmg.kg.add_abox_triple(&subject, "likes", &object);
+        counting_maintenance.reasoner.add_abox_triple(&subject, "likes", &object);
         }
 
         // println!("]");
 
         // Add transitivity rule: likes(X, Y) & likes(Y, Z) => likes(X, Z)
-        cmg.kg.add_rule(Rule {
+        counting_maintenance.reasoner.add_rule(Rule {
         premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("likes")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("likes")),
                 Term::Variable("y".to_string()),
             ),
             (
                 Term::Variable("y".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("likes")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("likes")),
                 Term::Variable("z".to_string()),
             ),
         ],
         conclusion: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(cmg.kg.dictionary.clone().encode("likes")),
+            Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("likes")),
             Term::Variable("z".to_string()),
         )],
         filters: vec![],
@@ -462,7 +590,7 @@ mod tests {
 
     // Run the optimized inference
     let start = Instant::now();
-    let inferred_facts = cmg.semi_naive_counting();
+    let inferred_facts = counting_maintenance.semi_naive_counting();
     let duration = start.elapsed();
     println!("Inference took: {:?}", duration);
 
@@ -481,7 +609,7 @@ mod tests {
     // cmg.print_trace();
 
 
-    let count = cmg.trace[1].get(&inferred_facts[0]).unwrap().to_owned();
+    let count = counting_maintenance.trace[1].get(&inferred_facts[0]).unwrap().to_owned();
     assert_eq!(count, 1);
 
     }
@@ -489,16 +617,16 @@ mod tests {
 
     #[test]
     fn semi_naive_counting_graph_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut counting_maintenance = CountingMaintenance::new();
 
-        cmg.kg.add_abox_triple("a", "edge", "b");
-        cmg.kg.add_abox_triple("b", "edge", "c");
-        cmg.kg.add_abox_triple("e", "edge", "d");
+        counting_maintenance.reasoner.add_abox_triple("a", "edge", "b");
+        counting_maintenance.reasoner.add_abox_triple("b", "edge", "c");
+        counting_maintenance.reasoner.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(cmg.kg.dictionary.clone().encode("edge"));
-        let reachable = Term::Constant(cmg.kg.dictionary.encode("reachable"));
+        let edge = Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("edge"));
+        let reachable = Term::Constant(counting_maintenance.reasoner.dictionary.encode("reachable"));
 
-        cmg.kg.add_rule(Rule {
+        counting_maintenance.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
@@ -519,17 +647,17 @@ mod tests {
             filters: vec![],
         });
 
-        cmg.kg.add_rule(Rule {
+        counting_maintenance.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("reachable")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -551,11 +679,11 @@ mod tests {
         //     filters: vec![],
         // });
 
-    let inferred_facts = cmg.semi_naive_counting();
+    let inferred_facts = counting_maintenance.semi_naive_counting();
 
     // cmg.print_trace();
 
-    let all_facts = cmg.kg.index_manager.query(None, None, None);
+    let all_facts = counting_maintenance.reasoner.index_manager.query(None, None, None);
 
     assert_eq!(7, all_facts.len());
     assert_eq!(4, inferred_facts.len());
@@ -563,13 +691,13 @@ mod tests {
 
     #[test]
     fn semi_naive_counting_reflexive_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut cmg = CountingMaintenance::new();
 
-        cmg.kg.add_abox_triple("a", "r", "b");
+        cmg.reasoner.add_abox_triple("a", "r", "b");
 
-        let encoded_r = Term::Constant(cmg.kg.dictionary.encode("r"));
+        let encoded_r = Term::Constant(cmg.reasoner.dictionary.encode("r"));
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
@@ -593,9 +721,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("r"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("r"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 }, 1)
             ])
         );
@@ -603,9 +731,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("r"),
-                    object: cmg.kg.dictionary.encode("a"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("r"),
+                    object: cmg.reasoner.dictionary.encode("a"),
                 }, 1)
             ])
         );
@@ -613,9 +741,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("r"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("r"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 }, 1)
             ])
         );
@@ -625,16 +753,16 @@ mod tests {
 
     #[test]
     fn maintenance_counting_graph_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut cmg = CountingMaintenance::new();
 
-        cmg.kg.add_abox_triple("a", "edge", "b");
-        cmg.kg.add_abox_triple("b", "edge", "c");
-        cmg.kg.add_abox_triple("e", "edge", "d");
+        cmg.reasoner.add_abox_triple("a", "edge", "b");
+        cmg.reasoner.add_abox_triple("b", "edge", "c");
+        cmg.reasoner.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(cmg.kg.dictionary.clone().encode("edge"));
-        let reachable = Term::Constant(cmg.kg.dictionary.encode("reachable"));
+        let edge = Term::Constant(cmg.reasoner.dictionary.clone().encode("edge"));
+        let reachable = Term::Constant(cmg.reasoner.dictionary.encode("reachable"));
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
@@ -655,17 +783,17 @@ mod tests {
             filters: vec![],
         });
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+                Term::Constant(cmg.reasoner.dictionary.clone().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("reachable")),
+                Term::Constant(cmg.reasoner.dictionary.clone().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -675,9 +803,9 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.kg.dictionary.encode("b"),
-                predicate: cmg.kg.dictionary.encode("edge"),
-                object: cmg.kg.dictionary.encode("c"),
+                subject: cmg.reasoner.dictionary.encode("b"),
+                predicate: cmg.reasoner.dictionary.encode("edge"),
+                object: cmg.reasoner.dictionary.encode("c"),
             },
         ];
 
@@ -694,14 +822,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1)
             ])
         );
@@ -709,14 +837,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1)
             ])
         );
@@ -726,28 +854,28 @@ mod tests {
 
         assert_eq!(test_trace, cmg.trace);
 
-        let all_facts = cmg.kg.index_manager.query(None, None, None);
+        let all_facts = cmg.reasoner.index_manager.query(None, None, None);
 
         let test_facts = vec![
             Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
         ];
 
@@ -766,16 +894,16 @@ mod tests {
 
     #[test]
     fn maintenance_counting_small_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut cmg = CountingMaintenance::new();
 
-        cmg.kg.add_abox_triple("a", "t", "b");
-        cmg.kg.add_abox_triple("f", "t", "b");
-        cmg.kg.add_abox_triple("c", "t", "d");
+        cmg.reasoner.add_abox_triple("a", "t", "b");
+        cmg.reasoner.add_abox_triple("f", "t", "b");
+        cmg.reasoner.add_abox_triple("c", "t", "d");
 
-        let encoded_r = Term::Constant(cmg.kg.dictionary.encode("r"));
-        let encoded_t = Term::Constant(cmg.kg.dictionary.encode("t"));
+        let encoded_r = Term::Constant(cmg.reasoner.dictionary.encode("r"));
+        let encoded_t = Term::Constant(cmg.reasoner.dictionary.encode("t"));
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
@@ -795,22 +923,22 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.kg.dictionary.encode("f"),
-                predicate: cmg.kg.dictionary.encode("t"),
-                object: cmg.kg.dictionary.encode("b"),
+                subject: cmg.reasoner.dictionary.encode("f"),
+                predicate: cmg.reasoner.dictionary.encode("t"),
+                object: cmg.reasoner.dictionary.encode("b"),
             },
             Triple {
-                subject: cmg.kg.dictionary.encode("a"),
-                predicate: cmg.kg.dictionary.encode("t"),
-                object: cmg.kg.dictionary.encode("b"),
+                subject: cmg.reasoner.dictionary.encode("a"),
+                predicate: cmg.reasoner.dictionary.encode("t"),
+                object: cmg.reasoner.dictionary.encode("b"),
             },
         ];
 
         let added: Vec<Triple> = vec![
             Triple {
-                subject: cmg.kg.dictionary.encode("g"),
-                predicate: cmg.kg.dictionary.encode("t"),
-                object: cmg.kg.dictionary.encode("d"),
+                subject: cmg.reasoner.dictionary.encode("g"),
+                predicate: cmg.reasoner.dictionary.encode("t"),
+                object: cmg.reasoner.dictionary.encode("d"),
             }
         ];
 
@@ -826,14 +954,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("c"),
-                    predicate: cmg.kg.dictionary.encode("t"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("c"),
+                    predicate: cmg.reasoner.dictionary.encode("t"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("g"),
-                    predicate: cmg.kg.dictionary.encode("t"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("g"),
+                    predicate: cmg.reasoner.dictionary.encode("t"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1)
             ])
         );
@@ -841,9 +969,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("d"),
-                    predicate: cmg.kg.dictionary.encode("r"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("d"),
+                    predicate: cmg.reasoner.dictionary.encode("r"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 2)
             ])
         );
@@ -852,23 +980,23 @@ mod tests {
 
         assert_eq!(test_trace, cmg.trace);
 
-        let all_facts = cmg.kg.index_manager.query(None, None, None);
+        let all_facts = cmg.reasoner.index_manager.query(None, None, None);
 
         let test_facts = vec![
             Triple {
-                    subject: cmg.kg.dictionary.encode("c"),
-                    predicate: cmg.kg.dictionary.encode("t"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("c"),
+                    predicate: cmg.reasoner.dictionary.encode("t"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("g"),
-                    predicate: cmg.kg.dictionary.encode("t"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("g"),
+                    predicate: cmg.reasoner.dictionary.encode("t"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("d"),
-                    predicate: cmg.kg.dictionary.encode("r"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("d"),
+                    predicate: cmg.reasoner.dictionary.encode("r"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
         ];
 
@@ -887,13 +1015,13 @@ mod tests {
 
     #[test]
     fn maintenance_counting_reflexive_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut cmg = CountingMaintenance::new();
 
-        cmg.kg.add_abox_triple("a", "r", "b");
+        cmg.reasoner.add_abox_triple("a", "r", "b");
 
-        let encoded_r = Term::Constant(cmg.kg.dictionary.encode("r"));
+        let encoded_r = Term::Constant(cmg.reasoner.dictionary.encode("r"));
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
@@ -914,9 +1042,9 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.kg.dictionary.encode("a"),
-                predicate: cmg.kg.dictionary.encode("r"),
-                object: cmg.kg.dictionary.encode("b"),
+                subject: cmg.reasoner.dictionary.encode("a"),
+                predicate: cmg.reasoner.dictionary.encode("r"),
+                object: cmg.reasoner.dictionary.encode("b"),
             },
         ];
 
@@ -927,7 +1055,7 @@ mod tests {
         let duration = start.elapsed();
         println!("Inference took: {:?}", duration);
 
-        let _ = cmg.kg.index_manager.query(None, None, None);
+        let _ = cmg.reasoner.index_manager.query(None, None, None);
 
         // cmg.print_trace();
 
@@ -935,7 +1063,7 @@ mod tests {
 
         assert_eq!(test_trace, cmg.trace);
 
-        let all_facts = cmg.kg.index_manager.query(None, None, None);
+        let all_facts = cmg.reasoner.index_manager.query(None, None, None);
 
         // println!("Trace");
         // println!("{:#?}", cmg.decode_trace());
@@ -952,16 +1080,16 @@ mod tests {
 
     #[test]
     fn maintenance_counting_graph_alternative_route_test() {
-        let mut cmg = CountingMaintenanceGraph::new();
+        let mut cmg = CountingMaintenance::new();
 
-        cmg.kg.add_abox_triple("a", "edge", "b");
-        cmg.kg.add_abox_triple("b", "edge", "c");
-        cmg.kg.add_abox_triple("e", "edge", "d");
+        cmg.reasoner.add_abox_triple("a", "edge", "b");
+        cmg.reasoner.add_abox_triple("b", "edge", "c");
+        cmg.reasoner.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(cmg.kg.dictionary.clone().encode("edge"));
-        let reachable = Term::Constant(cmg.kg.dictionary.encode("reachable"));
+        let edge = Term::Constant(cmg.reasoner.dictionary.clone().encode("edge"));
+        let reachable = Term::Constant(cmg.reasoner.dictionary.encode("reachable"));
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
@@ -982,17 +1110,17 @@ mod tests {
             filters: vec![],
         });
 
-        cmg.kg.add_rule(Rule {
+        cmg.reasoner.add_rule(Rule {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("edge")),
+                Term::Constant(cmg.reasoner.dictionary.clone().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.kg.dictionary.clone().encode("reachable")),
+                Term::Constant(cmg.reasoner.dictionary.clone().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -1002,21 +1130,21 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.kg.dictionary.encode("b"),
-                predicate: cmg.kg.dictionary.encode("edge"),
-                object: cmg.kg.dictionary.encode("c"),
+                subject: cmg.reasoner.dictionary.encode("b"),
+                predicate: cmg.reasoner.dictionary.encode("edge"),
+                object: cmg.reasoner.dictionary.encode("c"),
             },
         ];
 
         let added: Vec<Triple> = vec![
             Triple {
-                subject: cmg.kg.dictionary.encode("b"),
-                predicate: cmg.kg.dictionary.encode("edge"),
-                object: cmg.kg.dictionary.encode("e"),
+                subject: cmg.reasoner.dictionary.encode("b"),
+                predicate: cmg.reasoner.dictionary.encode("edge"),
+                object: cmg.reasoner.dictionary.encode("e"),
             },
         ];
 
-        let all_facts = cmg.kg.index_manager.query(None, None, None);
+        let all_facts = cmg.reasoner.index_manager.query(None, None, None);
 
         println!("Old facts:");
         let mut facts = vec![];
@@ -1036,19 +1164,19 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("e"),
                 }, 1)
             ])
         );
@@ -1056,19 +1184,19 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("e"),
                 }, 1)
             ])
         );
@@ -1076,14 +1204,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("e"),
                 }, 1)
             ])
         );
@@ -1091,9 +1219,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 }, 1)
             ])
         );
@@ -1102,53 +1230,53 @@ mod tests {
 
         assert_eq!(test_trace, cmg.trace);
 
-        let all_facts = cmg.kg.index_manager.query(None, None, None);
+        let all_facts = cmg.reasoner.index_manager.query(None, None, None);
 
         let test_facts = vec![
             Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("edge"),
-                    object: cmg.kg.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("edge"),
+                    object: cmg.reasoner.dictionary.encode("e"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("b"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("e"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("e"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("e"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("b"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("b"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("e"),
                 },
             Triple {
-                    subject: cmg.kg.dictionary.encode("a"),
-                    predicate: cmg.kg.dictionary.encode("reachable"),
-                    object: cmg.kg.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.encode("a"),
+                    predicate: cmg.reasoner.dictionary.encode("reachable"),
+                    object: cmg.reasoner.dictionary.encode("d"),
                 },
         ];
 
