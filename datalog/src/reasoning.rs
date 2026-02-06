@@ -97,7 +97,7 @@ impl Reasoner {
             .collect()
     }
 
-    fn join_premise_with_hash_join(
+    pub fn join_premise_with_hash_join(
         &self,
         premise: &TriplePattern,
         all_facts: &Vec<Triple>,
@@ -149,7 +149,7 @@ impl Reasoner {
         (subject_var, predicate_str, object_var)
     }
 
-    fn convert_string_binding_to_u32(&self, binding: &BTreeMap<String, String>) -> HashMap<String, u32> {
+    pub fn convert_string_binding_to_u32(&self, binding: &BTreeMap<String, String>) -> HashMap<String, u32> {
         let mut result = HashMap::new();
         for (var, value) in binding {
             if let Some(&id) = self.dictionary.string_to_id.get(value) {
