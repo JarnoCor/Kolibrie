@@ -76,7 +76,7 @@ impl Reasoner {
     }
 
     /// Convert rule evaluation to use the optimized hash join
-    fn evaluate_rule_with_optimized_join(&self, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
+    pub fn evaluate_rule_with_optimized_join(&self, rule: &Rule, all_facts: &Vec<Triple>) -> Vec<HashMap<String, u32>> {
         if rule.premise.is_empty() {
             return Vec::new();
         }
@@ -97,7 +97,7 @@ impl Reasoner {
             .collect()
     }
 
-    pub fn join_premise_with_hash_join(
+    fn join_premise_with_hash_join(
         &self,
         premise: &TriplePattern,
         all_facts: &Vec<Triple>,
