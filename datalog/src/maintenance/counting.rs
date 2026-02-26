@@ -107,10 +107,10 @@ impl CountingMaintenance {
 
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
-                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
+                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
 
                         for conclusion in &rule.conclusion {
-                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
+                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary.write().unwrap());
 
                             // update the count of the inferred triple, or insert the triple with multiplicity 1 if it was not present
                             counts.entry(inferred.clone()).and_modify(|count| *count += 1).or_insert(1);
@@ -273,10 +273,10 @@ impl CountingMaintenance {
                 bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &symm_diff1, &symm_diff2);
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
-                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
+                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
 
                         for conclusion in &rule.conclusion {
-                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
+                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary.write().unwrap());
                             removed_this_iteration.push(inferred);
                         }
                     }
@@ -308,10 +308,10 @@ impl CountingMaintenance {
                 bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &symm_diff1, &symm_diff2);
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
-                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
+                    if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
 
                         for conclusion in &rule.conclusion {
-                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
+                            inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary.write().unwrap());
                             added_this_iteration.push(inferred);
                         }
                     }
@@ -357,9 +357,11 @@ impl CountingMaintenance {
     /// assert_eq!(counting_maintenance.decode_triple(triple), String::from("a edge b"));
     /// ```
     pub fn decode_triple(&self, triple: &Triple) -> String {
-        let subject = self.reasoner.dictionary.decode(triple.subject).unwrap_or("unknown");
-        let predicate = self.reasoner.dictionary.decode(triple.predicate).unwrap_or("unknown");
-        let object = self.reasoner.dictionary.decode(triple.object).unwrap_or("unknown");
+        let dictionary = self.reasoner.dictionary.write().unwrap();
+
+        let subject = dictionary.decode(triple.subject).unwrap_or("unknown");
+        let predicate = dictionary.decode(triple.predicate).unwrap_or("unknown");
+        let object = dictionary.decode(triple.object).unwrap_or("unknown");
 
         format!("{} {} {}", subject, predicate, object)
     }
@@ -568,18 +570,18 @@ mod tests {
         premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("likes")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().write().unwrap().encode("likes")),
                 Term::Variable("y".to_string()),
             ),
             (
                 Term::Variable("y".to_string()),
-                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("likes")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().write().unwrap().encode("likes")),
                 Term::Variable("z".to_string()),
             ),
         ],
         conclusion: vec![(
             Term::Variable("x".to_string()),
-            Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("likes")),
+            Term::Constant(counting_maintenance.reasoner.dictionary.clone().write().unwrap().encode("likes")),
             Term::Variable("z".to_string()),
         )],
         filters: vec![],
@@ -620,8 +622,8 @@ mod tests {
         counting_maintenance.reasoner.add_abox_triple("b", "edge", "c");
         counting_maintenance.reasoner.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("edge"));
-        let reachable = Term::Constant(counting_maintenance.reasoner.dictionary.encode("reachable"));
+        let edge = Term::Constant(counting_maintenance.reasoner.dictionary.clone().write().unwrap().encode("edge"));
+        let reachable = Term::Constant(counting_maintenance.reasoner.dictionary.write().unwrap().encode("reachable"));
 
         counting_maintenance.reasoner.add_rule(Rule {
             premise: vec![
@@ -648,13 +650,13 @@ mod tests {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("edge")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().write().unwrap().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("reachable")),
+                Term::Constant(counting_maintenance.reasoner.dictionary.clone().write().unwrap().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -692,7 +694,7 @@ mod tests {
 
         cmg.reasoner.add_abox_triple("a", "r", "b");
 
-        let encoded_r = Term::Constant(cmg.reasoner.dictionary.encode("r"));
+        let encoded_r = Term::Constant(cmg.reasoner.dictionary.write().unwrap().encode("r"));
 
         cmg.reasoner.add_rule(Rule {
             premise: vec![
@@ -718,9 +720,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("r"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("r"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 }, 1)
             ])
         );
@@ -728,9 +730,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("r"),
-                    object: cmg.reasoner.dictionary.encode("a"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("r"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("a"),
                 }, 1)
             ])
         );
@@ -738,9 +740,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("r"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("r"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 }, 1)
             ])
         );
@@ -756,8 +758,8 @@ mod tests {
         cmg.reasoner.add_abox_triple("b", "edge", "c");
         cmg.reasoner.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(cmg.reasoner.dictionary.clone().encode("edge"));
-        let reachable = Term::Constant(cmg.reasoner.dictionary.encode("reachable"));
+        let edge = Term::Constant(cmg.reasoner.dictionary.clone().write().unwrap().encode("edge"));
+        let reachable = Term::Constant(cmg.reasoner.dictionary.write().unwrap().encode("reachable"));
 
         cmg.reasoner.add_rule(Rule {
             premise: vec![
@@ -784,13 +786,13 @@ mod tests {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.reasoner.dictionary.clone().encode("edge")),
+                Term::Constant(cmg.reasoner.dictionary.clone().write().unwrap().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.reasoner.dictionary.clone().encode("reachable")),
+                Term::Constant(cmg.reasoner.dictionary.clone().write().unwrap().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -800,9 +802,9 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.reasoner.dictionary.encode("b"),
-                predicate: cmg.reasoner.dictionary.encode("edge"),
-                object: cmg.reasoner.dictionary.encode("c"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("c"),
             },
         ];
 
@@ -819,14 +821,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1)
             ])
         );
@@ -834,14 +836,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1)
             ])
         );
@@ -855,24 +857,24 @@ mod tests {
 
         let test_facts = vec![
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
         ];
 
@@ -897,8 +899,8 @@ mod tests {
         cmg.reasoner.add_abox_triple("f", "t", "b");
         cmg.reasoner.add_abox_triple("c", "t", "d");
 
-        let encoded_r = Term::Constant(cmg.reasoner.dictionary.encode("r"));
-        let encoded_t = Term::Constant(cmg.reasoner.dictionary.encode("t"));
+        let encoded_r = Term::Constant(cmg.reasoner.dictionary.write().unwrap().encode("r"));
+        let encoded_t = Term::Constant(cmg.reasoner.dictionary.write().unwrap().encode("t"));
 
         cmg.reasoner.add_rule(Rule {
             premise: vec![
@@ -920,22 +922,22 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.reasoner.dictionary.encode("f"),
-                predicate: cmg.reasoner.dictionary.encode("t"),
-                object: cmg.reasoner.dictionary.encode("b"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("f"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: cmg.reasoner.dictionary.encode("a"),
-                predicate: cmg.reasoner.dictionary.encode("t"),
-                object: cmg.reasoner.dictionary.encode("b"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
             },
         ];
 
         let added: Vec<Triple> = vec![
             Triple {
-                subject: cmg.reasoner.dictionary.encode("g"),
-                predicate: cmg.reasoner.dictionary.encode("t"),
-                object: cmg.reasoner.dictionary.encode("d"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("g"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
             }
         ];
 
@@ -951,14 +953,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("c"),
-                    predicate: cmg.reasoner.dictionary.encode("t"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("c"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("g"),
-                    predicate: cmg.reasoner.dictionary.encode("t"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("g"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1)
             ])
         );
@@ -966,9 +968,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("d"),
-                    predicate: cmg.reasoner.dictionary.encode("r"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("d"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("r"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 2)
             ])
         );
@@ -981,19 +983,19 @@ mod tests {
 
         let test_facts = vec![
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("c"),
-                    predicate: cmg.reasoner.dictionary.encode("t"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("c"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("g"),
-                    predicate: cmg.reasoner.dictionary.encode("t"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("g"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("t"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("d"),
-                    predicate: cmg.reasoner.dictionary.encode("r"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("d"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("r"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
         ];
 
@@ -1016,7 +1018,7 @@ mod tests {
 
         cmg.reasoner.add_abox_triple("a", "r", "b");
 
-        let encoded_r = Term::Constant(cmg.reasoner.dictionary.encode("r"));
+        let encoded_r = Term::Constant(cmg.reasoner.dictionary.write().unwrap().encode("r"));
 
         cmg.reasoner.add_rule(Rule {
             premise: vec![
@@ -1039,9 +1041,9 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.reasoner.dictionary.encode("a"),
-                predicate: cmg.reasoner.dictionary.encode("r"),
-                object: cmg.reasoner.dictionary.encode("b"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("r"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
             },
         ];
 
@@ -1083,8 +1085,8 @@ mod tests {
         cmg.reasoner.add_abox_triple("b", "edge", "c");
         cmg.reasoner.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(cmg.reasoner.dictionary.clone().encode("edge"));
-        let reachable = Term::Constant(cmg.reasoner.dictionary.encode("reachable"));
+        let edge = Term::Constant(cmg.reasoner.dictionary.clone().write().unwrap().encode("edge"));
+        let reachable = Term::Constant(cmg.reasoner.dictionary.write().unwrap().encode("reachable"));
 
         cmg.reasoner.add_rule(Rule {
             premise: vec![
@@ -1111,13 +1113,13 @@ mod tests {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.reasoner.dictionary.clone().encode("edge")),
+                Term::Constant(cmg.reasoner.dictionary.clone().write().unwrap().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(cmg.reasoner.dictionary.clone().encode("reachable")),
+                Term::Constant(cmg.reasoner.dictionary.clone().write().unwrap().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -1127,17 +1129,17 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: cmg.reasoner.dictionary.encode("b"),
-                predicate: cmg.reasoner.dictionary.encode("edge"),
-                object: cmg.reasoner.dictionary.encode("c"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("c"),
             },
         ];
 
         let added: Vec<Triple> = vec![
             Triple {
-                subject: cmg.reasoner.dictionary.encode("b"),
-                predicate: cmg.reasoner.dictionary.encode("edge"),
-                object: cmg.reasoner.dictionary.encode("e"),
+                subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
             },
         ];
 
@@ -1161,19 +1163,19 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
                 }, 1)
             ])
         );
@@ -1181,19 +1183,19 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
                 }, 1)
             ])
         );
@@ -1201,14 +1203,14 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1),
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
                 }, 1)
             ])
         );
@@ -1216,9 +1218,9 @@ mod tests {
         test_trace.push(
             HashMap::from([
                 (Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 }, 1)
             ])
         );
@@ -1231,49 +1233,49 @@ mod tests {
 
         let test_facts = vec![
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("edge"),
-                    object: cmg.reasoner.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("edge"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("b"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("b"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("e"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("e"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("b"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("b"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("e"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("e"),
                 },
             Triple {
-                    subject: cmg.reasoner.dictionary.encode("a"),
-                    predicate: cmg.reasoner.dictionary.encode("reachable"),
-                    object: cmg.reasoner.dictionary.encode("d"),
+                    subject: cmg.reasoner.dictionary.write().unwrap().encode("a"),
+                    predicate: cmg.reasoner.dictionary.write().unwrap().encode("reachable"),
+                    object: cmg.reasoner.dictionary.write().unwrap().encode("d"),
                 },
         ];
 

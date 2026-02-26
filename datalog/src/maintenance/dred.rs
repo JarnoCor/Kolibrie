@@ -21,9 +21,11 @@ impl DRedMaintenance {
 
     /// Add an ABox triple (instance-level information).
     pub fn add_abox_triple(&mut self, subject: &str, predicate: &str, object: &str) {
-        let s = self.reasoner.dictionary.encode(subject);
-        let p = self.reasoner.dictionary.encode(predicate);
-        let o = self.reasoner.dictionary.encode(object);
+        let mut dictionary = self.reasoner.dictionary.write().unwrap();
+
+        let s = dictionary.encode(subject);
+        let p = dictionary.encode(predicate);
+        let o = dictionary.encode(object);
 
         let triple = Triple { subject: s, predicate: p, object: o };
 
@@ -207,10 +209,10 @@ impl DRedMaintenance {
 
         for binding in bindings {
                 // check if the binding adheres to the filters of the rule
-                if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary) {
+                if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
 
                     for conclusion in &rule.conclusion {
-                        inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary);
+                        inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary.write().unwrap());
                         result.insert(inferred);
                     }
                 }
@@ -220,9 +222,11 @@ impl DRedMaintenance {
     }
 
     pub fn decode_triple(&self, triple: &Triple) -> String {
-        let subject = self.reasoner.dictionary.decode(triple.subject).unwrap_or("unknown");
-        let predicate = self.reasoner.dictionary.decode(triple.predicate).unwrap_or("unknown");
-        let object = self.reasoner.dictionary.decode(triple.object).unwrap_or("unknown");
+        let dictionary = self.reasoner.dictionary.write().unwrap();
+
+        let subject = dictionary.decode(triple.subject).unwrap_or("unknown");
+        let predicate = dictionary.decode(triple.predicate).unwrap_or("unknown");
+        let object = dictionary.decode(triple.object).unwrap_or("unknown");
 
         format!("{} {} {}", subject, predicate, object)
     }
@@ -341,8 +345,8 @@ mod tests {
         dred.add_abox_triple("b", "edge", "c");
         dred.add_abox_triple("e", "edge", "d");
 
-        let edge = Term::Constant(dred.reasoner.dictionary.encode("edge"));
-        let reachable = Term::Constant(dred.reasoner.dictionary.encode("reachable"));
+        let edge = Term::Constant(dred.reasoner.dictionary.write().unwrap().encode("edge"));
+        let reachable = Term::Constant(dred.reasoner.dictionary.write().unwrap().encode("reachable"));
 
         dred.reasoner.add_rule(Rule {
             premise: vec![
@@ -369,13 +373,13 @@ mod tests {
             premise: vec![
             (
                 Term::Variable("x".to_string()),
-                Term::Constant(dred.reasoner.dictionary.clone().encode("edge")),
+                Term::Constant(dred.reasoner.dictionary.clone().write().unwrap().encode("edge")),
                 Term::Variable("y".to_string()),
             ),
             ],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
-                Term::Constant(dred.reasoner.clone().dictionary.encode("reachable")),
+                Term::Constant(dred.reasoner.clone().dictionary.write().unwrap().encode("reachable")),
                 Term::Variable("y".to_string()),
             )],
             filters: vec![],
@@ -383,17 +387,17 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("c"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("c"),
             },
         ];
 
         let added: Vec<Triple> = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("e"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("e"),
             },
         ];
 
@@ -408,67 +412,67 @@ mod tests {
 
         let test_materialisation = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("e"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("e"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("e"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("e"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("reachable"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("reachable"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("e"),
-                predicate: dred.reasoner.dictionary.encode("reachable"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("e"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("reachable"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("reachable"),
-                object: dred.reasoner.dictionary.encode("e"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("reachable"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("e"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("reachable"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("reachable"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("reachable"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("reachable"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("reachable"),
-                object: dred.reasoner.dictionary.encode("e"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("reachable"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("e"),
             },
         ];
 
         let test_explicit = HashSet::from([
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("e"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("e"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("edge"),
-                object: dred.reasoner.dictionary.encode("e"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("edge"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("e"),
             },
         ]);
 
@@ -484,8 +488,8 @@ mod tests {
         dred.add_abox_triple("f", "t", "b");
         dred.add_abox_triple("c", "t", "d");
 
-        let encoded_r = Term::Constant(dred.reasoner.dictionary.encode("r"));
-        let encoded_t = Term::Constant(dred.reasoner.dictionary.encode("t"));
+        let encoded_r = Term::Constant(dred.reasoner.dictionary.write().unwrap().encode("r"));
+        let encoded_t = Term::Constant(dred.reasoner.dictionary.write().unwrap().encode("t"));
 
         dred.reasoner.add_rule(Rule {
             premise: vec![
@@ -505,17 +509,17 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("f"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("f"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
         ];
 
         let added: Vec<Triple> = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("g"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("g"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             }
         ];
 
@@ -530,47 +534,47 @@ mod tests {
 
         let test_materialisation = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("c"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("c"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("g"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("g"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("b"),
-                predicate: dred.reasoner.dictionary.encode("r"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("b"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("r"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("d"),
-                predicate: dred.reasoner.dictionary.encode("r"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("d"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("r"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
         ];
 
         let test_explicit = HashSet::from([
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("c"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("c"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
             Triple {
-                subject: dred.reasoner.dictionary.encode("g"),
-                predicate: dred.reasoner.dictionary.encode("t"),
-                object: dred.reasoner.dictionary.encode("d"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("g"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("t"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("d"),
             },
         ]);
 
@@ -584,7 +588,7 @@ mod tests {
 
         dred.add_abox_triple("a", "r", "b");
 
-        let encoded_r = Term::Constant(dred.reasoner.dictionary.encode("r"));
+        let encoded_r = Term::Constant(dred.reasoner.dictionary.write().unwrap().encode("r"));
 
         dred.reasoner.add_rule(Rule {
             premise: vec![
@@ -606,9 +610,9 @@ mod tests {
 
         let removed: Vec<Triple> = vec![
             Triple {
-                subject: dred.reasoner.dictionary.encode("a"),
-                predicate: dred.reasoner.dictionary.encode("r"),
-                object: dred.reasoner.dictionary.encode("b"),
+                subject: dred.reasoner.dictionary.write().unwrap().encode("a"),
+                predicate: dred.reasoner.dictionary.write().unwrap().encode("r"),
+                object: dred.reasoner.dictionary.write().unwrap().encode("b"),
             },
         ];
 
