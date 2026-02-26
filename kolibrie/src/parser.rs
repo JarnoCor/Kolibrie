@@ -46,6 +46,7 @@ pub fn prefixed_identifier(input: &str) -> IResult<&str, &str> {
 pub fn predicate(input: &str) -> IResult<&str, &str> {
     alt((
         parse_uri,
+        variable,
         recognize((char(':'), identifier)),
         prefixed_identifier,
         tag("a"),
@@ -106,7 +107,14 @@ pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>>
     pairs.extend(rest_po);
 
     // Convert each pair into a triple by reusing the same subject
-    let triples = pairs.into_iter().map(|(p, o)| (subject, p, o)).collect();
+    let triples = pairs.into_iter().map(|(p, o)| {
+        let resolved_p = if p == "a" {
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+        } else {
+            p
+        };
+        (subject, resolved_p, o)
+    }).collect();
 
     Ok((input, triples))
 }
@@ -1713,13 +1721,10 @@ pub fn process_rule_definition(
     database.register_prefixes_from_query(rule_input);
 
     let mut kg = Reasoner::new();
+    kg.dictionary = database.dictionary.clone();
+    
     for triple in database.triples.iter() {
-        let subject = database.dictionary.decode(triple.subject);
-        let predicate = database.dictionary.decode(triple.predicate);
-        let object = database.dictionary.decode(triple.object);
-        if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
-            kg.add_abox_triple(&s, &p, &o);
-        }
+        kg.index_manager.insert(triple);
     }
 
     // Parse the standalone rule
@@ -1735,7 +1740,10 @@ pub fn process_rule_definition(
         let mut rule_prefixes = prefixes.clone();
         database.share_prefixes_with(&mut rule_prefixes);
 
-        let dynamic_rule = convert_combined_rule(rule.clone(), &mut database.dictionary, &rule_prefixes);
+        let mut dict = kg.dictionary.write().unwrap();
+        let dynamic_rule = convert_combined_rule(rule.clone(), &mut dict, &rule_prefixes);
+        drop(dict);
+        database.dictionary = kg.dictionary.clone();
 
         // Check if this rule has windowing - if so, set up RSP processing
         if !rule.window_clause.is_empty() {
@@ -1759,11 +1767,13 @@ pub fn process_rule_definition(
                 // Process existing triples through the window
                 let mut current_time = 1;
                 for triple in database.triples.iter() {
+                    let dict = database.dictionary.read().unwrap();
                     let window_triple = WindowTriple {
-                        s: database.dictionary.decode(triple.subject).unwrap_or("").to_string(),
-                        p: database.dictionary.decode(triple.predicate).unwrap_or("").to_string(),
-                        o: database.dictionary.decode(triple.object).unwrap_or("").to_string(),
+                        s: dict.decode(triple.subject).unwrap_or("").to_string(),
+                        p: dict.decode(triple.predicate).unwrap_or("").to_string(),
+                        o: dict.decode(triple.object).unwrap_or("").to_string(),
                     };
+                    drop(dict);
 
                     // Add to window
                     rsp_window.add_to_window(window_triple, current_time);
@@ -1863,16 +1873,21 @@ pub fn process_retrieve_clause(
         // Create a temporary knowledge graph to match patterns
         let mut kg = Reasoner::new();
         for triple in database.triples.iter() {
-            let subject = database.dictionary.decode(triple.subject);
-            let predicate = database.dictionary.decode(triple.predicate);
-            let object = database.dictionary.decode(triple.object);
+            let dict = database.dictionary.read().unwrap();
+            let subject = dict.decode(triple.subject).map(|s| s.to_string());
+            let predicate = dict.decode(triple.predicate).map(|p| p.to_string());
+            let object = dict.decode(triple.object).map(|o| o.to_string());
+            drop(dict);
+
             if let (Some(s), Some(p), Some(o)) = (subject, predicate, object) {
                 kg.add_abox_triple(&s, &p, &o);
             }
         }
         
         // Match the pattern against the knowledge graph
-        let pattern_converted = convert_triple_pattern(*pattern, &mut database.dictionary, &database.prefixes);
+        let mut dict = database.dictionary.write().unwrap();
+        let pattern_converted = convert_triple_pattern(*pattern, &mut dict, &database.prefixes);
+        drop(dict);
         
         // Find matching triples based on the pattern
         for triple in database.triples.iter() {
@@ -1952,7 +1967,9 @@ fn create_rsp_window(window_spec: &WindowSpec) -> Result<CSPARQLWindow<WindowTri
 fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
     for conclusion in &rule.conclusion {
         if let Term::Constant(code) = conclusion.1 {
-            let expanded = database.dictionary.decode(code).unwrap_or_else(|| "");
+            let dict = database.dictionary.read().unwrap();
+            let expanded = dict.decode(code).unwrap_or_else(|| "").to_string();
+            drop(dict);
             let local = if let Some(idx) = expanded.rfind('#') {
                 &expanded[idx + 1..]
             } else if let Some(idx) = expanded.rfind(':') {

@@ -66,6 +66,15 @@ Then, include it in your project:
 use kolibrie::SparqlDatabase;
 ```
 
+### WebUI
+
+To run webui:
+```bash
+cargo run --bin kolibrie-http-server
+```
+
+After that in the browser type `localhost:8080` or `0.0.0.0:8080`
+
 ### Docker Installation
 
 **Kolibrie** provides Docker support with multiple configurations optimized for different use cases. The Docker setup automatically handles all dependencies including Rust, CUDA (for GPU builds), and Python ML frameworks which are fully integrated into Kolibrie.
@@ -114,15 +123,18 @@ This drops you into a bash shell with full access to Kolibrie tools.
 If you prefer using Docker directly:
 
 **CPU Build with Web UI:**
+
+Build:
 ```bash
-# Build
 docker build \
   --build-arg GPU_VENDOR=none \
   --build-arg ENABLE_WEB_UI=true \
   -t kolibrie:cpu \
   .
+```
 
-# Run
+Run:
+```bash
 docker run -d \
   --name kolibrie \
   -p 8080:8080 \
@@ -132,8 +144,9 @@ docker run -d \
 ```
 
 **GPU Build with Web UI:**
+
+Build:
 ```bash
-# Build
 docker build \
   --build-arg GPU_VENDOR=nvidia \
   --build-arg CUDA_VERSION=11.8 \
@@ -141,8 +154,10 @@ docker build \
   --build-arg ENABLE_WEB_UI=true \
   -t kolibrie:gpu \
   .
+```
 
-# Run
+Run:
+```bash
 docker run -d \
   --name kolibrie-gpu \
   --gpus all \
@@ -153,15 +168,18 @@ docker run -d \
 ```
 
 **Development Build (Shell Access):**
+
+Build:
 ```bash
-# Build
 docker build \
   --build-arg GPU_VENDOR=none \
   --build-arg ENABLE_WEB_UI=false \
   -t kolibrie:dev \
   .
+```
 
-# Run
+Run:
+```bash
 docker run -it \
   --name kolibrie-dev \
   -v $(pwd):/app \
