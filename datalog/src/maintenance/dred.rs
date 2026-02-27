@@ -1,6 +1,6 @@
 use crate::reasoning::{Reasoner, construct_triple, evaluate_filters};
 
-use shared::{rule::Rule, triple::Triple};
+use shared::{dictionary, rule::Rule, triple::Triple};
 use std::collections::{HashMap, HashSet};
 
 /// A struct for incremental view maintenance (IVM) using the Delete and Rederive approach.
