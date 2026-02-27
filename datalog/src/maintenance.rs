@@ -6,6 +6,7 @@
 
 mod counting;
 mod dred;
+mod fbf;
 
 pub use counting::CountingMaintenance;
 pub use counting::Multiset;
@@ -13,3 +14,5 @@ pub use counting::multiset_add;
 pub use counting::multiset_subtract;
 
 pub use dred::DRedMaintenance;
+
+pub use fbf::FBFMaintenance;
