@@ -17,7 +17,7 @@ pub struct FBFMaintenance {
 }
 
 impl FBFMaintenance {
-    /// Creates a new [`FBFMaintenance `] with no explicit facts and an empty [`Reasoner`], and the specified amount of maximum backward steps
+    /// Creates a new [`FBFMaintenance`] with no explicit facts and an empty [`Reasoner`], and the specified amount of maximum backward steps
     pub fn new(steps: u32) -> FBFMaintenance {
         FBFMaintenance { reasoner: Reasoner::new(), explicit: HashSet::new(), steps: steps }
     }
@@ -36,6 +36,53 @@ impl FBFMaintenance {
         self.explicit.insert(triple);
     }
 
+    /// Performs IVM to update the facts in the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) of the [`Reasoner`] by adding and removing explicit and implicit facts using the Forward/Backward/Forward approach.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shared::{rule::Rule, terms::Term, triple::Triple};
+    /// use datalog::maintenance::FBFMaintenance;
+    ///
+    /// let mut fbf = FBFMaintenance::new(3);
+    /// fbf.reasoner.add_abox_triple("a", "knows", "b");
+    ///
+    /// let dictionary = &fbf.reasoner.dictionary.clone();
+    /// let mut dictionary = dictionary.write().unwrap();
+    ///
+    /// fbf.reasoner.add_rule(Rule {
+    ///     premise: vec![
+    ///     (
+    ///         Term::Variable("x".to_string()),
+    ///         Term::Constant(dictionary.encode("knows")),
+    ///         Term::Variable("y".to_string()),
+    ///     ),
+    ///     ],
+    ///     conclusion: vec![(
+    ///         Term::Variable("y".to_string()),
+    ///         Term::Constant(dictionary.encode("knows")),
+    ///         Term::Variable("x".to_string()),
+    ///     )],
+    ///     filters: vec![],
+    /// });
+    ///
+    /// let to_add: Vec<Triple> = Vec::new();
+    /// let to_remove: Vec<Triple> = vec![
+    ///     Triple {
+    ///         subject: dictionary.encode("a"),
+    ///         predicate: dictionary.encode("knows"),
+    ///         object: dictionary.encode("b"),
+    ///     }
+    /// ];
+    ///
+    /// drop(dictionary);
+    ///
+    /// fbf.fbf_maintenance(to_add, to_remove);
+    ///
+    /// let all_facts: Vec<Triple> = fbf.reasoner.index_manager.query(None, None, None);
+    ///
+    /// assert!(all_facts.is_empty());
+    /// ```
     pub fn fbf_maintenance(&mut self, to_add: Vec<Triple>, to_delete: Vec<Triple>) {
         let all_facts: Vec<Triple> = self.reasoner.index_manager.query(None, None, None);
 

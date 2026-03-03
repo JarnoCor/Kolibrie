@@ -33,6 +33,53 @@ impl DRedMaintenance {
         self.explicit.insert(triple);
     }
 
+    /// Performs IVM to update the facts in the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) of the [`Reasoner`] by adding and removing explicit and implicit facts using the Delete and Rederive approach.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shared::{rule::Rule, terms::Term, triple::Triple};
+    /// use datalog::maintenance::DRedMaintenance;
+    ///
+    /// let mut dred = DRedMaintenance::new();
+    /// dred.reasoner.add_abox_triple("a", "knows", "b");
+    ///
+    /// let dictionary = &dred.reasoner.dictionary.clone();
+    /// let mut dictionary = dictionary.write().unwrap();
+    ///
+    /// dred.reasoner.add_rule(Rule {
+    ///     premise: vec![
+    ///     (
+    ///         Term::Variable("x".to_string()),
+    ///         Term::Constant(dictionary.encode("knows")),
+    ///         Term::Variable("y".to_string()),
+    ///     ),
+    ///     ],
+    ///     conclusion: vec![(
+    ///         Term::Variable("y".to_string()),
+    ///         Term::Constant(dictionary.encode("knows")),
+    ///         Term::Variable("x".to_string()),
+    ///     )],
+    ///     filters: vec![],
+    /// });
+    ///
+    /// let to_add: Vec<Triple> = Vec::new();
+    /// let to_remove: Vec<Triple> = vec![
+    ///     Triple {
+    ///         subject: dictionary.encode("a"),
+    ///         predicate: dictionary.encode("knows"),
+    ///         object: dictionary.encode("b"),
+    ///     }
+    /// ];
+    ///
+    /// drop(dictionary);
+    ///
+    /// dred.dred_maintenance(to_add, to_remove);
+    ///
+    /// let all_facts: Vec<Triple> = dred.reasoner.index_manager.query(None, None, None);
+    ///
+    /// assert!(all_facts.is_empty());
+    /// ```
     pub fn dred_maintenance(&mut self, to_add: Vec<Triple>, to_delete: Vec<Triple>) {
         let all_facts: Vec<Triple> = self.reasoner.index_manager.query(None, None, None);
 
