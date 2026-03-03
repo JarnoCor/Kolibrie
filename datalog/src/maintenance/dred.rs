@@ -45,7 +45,7 @@ impl DRedMaintenance {
                 .filter(|triple| !to_delete.contains(*triple))
                 .cloned()
                 .collect();
-        
+
         self.explicit.extend(to_add.clone());
 
         // update the index manager
@@ -107,8 +107,8 @@ impl DRedMaintenance {
     pub fn rederive(&mut self, deleted: &HashSet<Triple>, to_delete: &Vec<Triple>, all_facts: &Vec<Triple>) -> HashSet<Triple>{
         // if an explicitly deleted fact is still in the explicit facts, it needs to be rederived if it was deleted
         let mut rederived: HashSet<Triple> = self.explicit.iter()
-                .filter(|triple| !to_delete.contains(*triple))
                 .filter(|triple| deleted.contains(*triple))
+                .filter(|triple| !to_delete.contains(*triple))
                 .cloned()
                 .collect();
 
@@ -165,7 +165,6 @@ impl DRedMaintenance {
             if delta.is_empty() {
                 break;
             }
-
 
             // clear the contents of the previous iteration
             n_a.clear();
@@ -230,6 +229,7 @@ mod tests {
     use std::time::Instant;
 
     fn vec_equal<T: Eq+Hash>(vec1: &Vec<T>, vec2: &Vec<T>) -> bool {
+        // TODO: is dit correct?
         let mut counts: HashMap<&T, u32> = HashMap::new();
 
         for element in vec1 {
@@ -249,24 +249,6 @@ mod tests {
         }
 
         true
-
-        // if vec1.len() != vec2.len() {
-        //     return false;
-        // }
-
-        // for item in vec1 {
-        //     if !vec2.contains(item) {
-        //         return false;
-        //     }
-        // }
-
-        // for item in vec2 {
-        //     if !vec1.contains(item) {
-        //         return false;
-        //     }
-        // }
-
-        // true
     }
 
     #[test]
@@ -336,6 +318,7 @@ mod tests {
         let dred = DRedMaintenance::new();
         let facts = dred.reasoner.index_manager.query(None, None, None);
 
+        assert!(dred.explicit.is_empty());
         assert!(facts.is_empty());
     }
 
