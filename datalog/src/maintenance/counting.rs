@@ -48,21 +48,26 @@ impl CountingMaintenance {
     /// let mut counting_maintenance = CountingMaintenance::new();
     /// counting_maintenance.reasoner.add_abox_triple("a", "knows", "b");
     ///
+    /// let dictionary = &counting_maintenance.reasoner.dictionary.clone();
+    /// let mut dictionary = dictionary.write().unwrap();
+    ///
     /// counting_maintenance.reasoner.add_rule(Rule {
     ///     premise: vec![
     ///     (
     ///         Term::Variable("x".to_string()),
-    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Constant(dictionary.encode("knows")),
     ///         Term::Variable("y".to_string()),
     ///     ),
     ///     ],
     ///     conclusion: vec![(
     ///         Term::Variable("y".to_string()),
-    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Constant(dictionary.encode("knows")),
     ///         Term::Variable("x".to_string()),
     ///     )],
     ///     filters: vec![],
     /// });
+    ///
+    /// drop(dictionary);
     ///
     /// let inferred: Vec<Triple> = counting_maintenance.semi_naive_counting();
     ///
@@ -133,7 +138,7 @@ impl CountingMaintenance {
         inferred_so_far
     }
 
-    /// Performs IVM to update the facts in the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) of the [`Reasoner`] by adding and removing explicit and implicit facts using a counting based approach.
+    /// Performs IVM to update the facts in the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) of the [`Reasoner`] by adding and removing explicit and implicit facts using a counting-based approach.
     ///
     /// # Examples
     ///
@@ -144,32 +149,42 @@ impl CountingMaintenance {
     /// let mut counting_maintenance = CountingMaintenance::new();
     /// counting_maintenance.reasoner.add_abox_triple("a", "knows", "b");
     ///
+    /// let dictionary = &counting_maintenance.reasoner.dictionary.clone();
+    /// let mut dictionary = dictionary.write().unwrap();
+    ///
     /// counting_maintenance.reasoner.add_rule(Rule {
     ///     premise: vec![
     ///     (
     ///         Term::Variable("x".to_string()),
-    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Constant(dictionary.encode("knows")),
     ///         Term::Variable("y".to_string()),
     ///     ),
     ///     ],
     ///     conclusion: vec![(
     ///         Term::Variable("y".to_string()),
-    ///         Term::Constant(counting_maintenance.reasoner.dictionary.clone().encode("knows")),
+    ///         Term::Constant(dictionary.encode("knows")),
     ///         Term::Variable("x".to_string()),
     ///     )],
     ///     filters: vec![],
     /// });
     ///
+    /// drop(dictionary);
+    ///
     /// let _ = counting_maintenance.semi_naive_counting();
-    /// 
+    ///
+    /// let dictionary = &counting_maintenance.reasoner.dictionary;
+    /// let mut dictionary = dictionary.write().unwrap();
+    ///
     /// let to_add: Vec<Triple> = Vec::new();
     /// let to_remove: Vec<Triple> = vec![
     ///     Triple {
-    ///         subject: counting_maintenance.reasoner.dictionary.encode("a"),
-    ///         predicate: counting_maintenance.reasoner.dictionary.encode("knows"),
-    ///         object: counting_maintenance.reasoner.dictionary.encode("b"),
+    ///         subject: dictionary.encode("a"),
+    ///         predicate: dictionary.encode("knows"),
+    ///         object: dictionary.encode("b"),
     ///     }
     /// ];
+    ///
+    /// drop(dictionary);
     ///
     /// counting_maintenance.maintenance_counting(to_add, to_remove);
     ///
