@@ -10,6 +10,7 @@ mod fbf;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 pub use counting::CountingMaintenance;
 pub use counting::Multiset;
@@ -27,6 +28,8 @@ use shared::terms::TriplePattern;
 use shared::triple::Triple;
 
 use crate::reasoning::convert_string_binding_to_u32;
+use crate::reasoning::materialisation::replace_variables_with_bound_values;
+use crate::reasoning::rules::evaluate_filters;
 use crate::reasoning::rules::join_premise_with_hash_join;
 
 /// Convert rule evaluation to use the optimized hash join
@@ -52,6 +55,24 @@ fn find_premise_solutions(dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple
         .into_iter()
         .map(|binding| convert_string_binding_to_u32(&binding, dict))
         .collect()
+}
+
+fn construct_triple_from_bindings(dict: &mut Dictionary, rule: &Rule, bindings: &Vec<HashMap<String, u32>>) -> HashSet<Triple> {
+    let mut result: HashSet<Triple> = HashSet::new();
+    let mut inferred: Triple;
+
+    for binding in bindings {
+        // check if the binding adheres to the filters of the rule
+        if evaluate_filters(binding, &rule.filters, dict) {
+
+            for conclusion in &rule.conclusion {
+                inferred = replace_variables_with_bound_values(conclusion, &binding, dict);
+                result.insert(inferred);
+            }
+        }
+    }
+
+    result
 }
 
 

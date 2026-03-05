@@ -1,4 +1,5 @@
-use crate::reasoning::{Reasoner, construct_triple, evaluate_filters};
+use crate::maintenance::{construct_triple, find_premise_solutions};
+use crate::reasoning::{Reasoner, rules::{evaluate_filters, join_rule}};
 
 use shared::{rule::Rule, triple::Triple};
 use std::collections::{HashMap, HashSet};
@@ -113,7 +114,7 @@ impl DRedMaintenance {
                 .cloned()
                 .collect();
 
-        let mut delta: Vec<Triple>;
+        let mut delta: HashSet<Triple>;
         let mut deleted: HashSet<Triple> = HashSet::new();
 
         loop {
@@ -132,14 +133,14 @@ impl DRedMaintenance {
             n_d.clear();
 
             // calculate the difference between all_facts and deleted
-            let difference: Vec<Triple> = all_facts.iter()
+            let difference: HashSet<Triple> = all_facts.iter()
                     .filter(|triple| !deleted.contains(*triple))
                     .cloned()
                     .collect();
 
             let mut bindings: Vec<HashMap<String, u32>>;
             for rule in self.reasoner.rules.clone().iter() {
-                bindings = self.reasoner.evaluate_rule_with_delta_improved(rule, &difference, &delta);
+                bindings = join_rule(rule, &difference, &delta);
                 n_d.extend(self.construct_triple_from_bindings(rule, bindings));
             }
 
@@ -169,7 +170,12 @@ impl DRedMaintenance {
 
         // evaluate the rules with the remaining facts
         for rule in self.reasoner.rules.clone().iter() {
-            bindings = self.reasoner.evaluate_rule_with_optimized_join(rule, &difference);
+            let dictionary = &self.reasoner.dictionary;
+            let dictionary = dictionary.write().unwrap();
+
+            bindings = find_premise_solutions(&dictionary, rule, &difference);
+
+            drop(dictionary);
 
             // construct triples from these bindings, but only keep those that were deleted by the overdeletion step
             let constructed_triples: HashSet<Triple> = self.construct_triple_from_bindings(rule, bindings).into_iter()
@@ -191,12 +197,12 @@ impl DRedMaintenance {
 
         n_a.extend(rederived.clone());
 
-        let mut delta: Vec<Triple>;
+        let mut delta: HashSet<Triple>;
         let mut added: HashSet<Triple> = HashSet::new();
 
         loop {
             // calculate the difference between all_facts and deleted, and do the union of added
-            let difference: Vec<Triple> = all_facts.iter()
+            let difference: HashSet<Triple> = all_facts.iter()
             .filter(|triple| !deleted.contains(*triple))
             .chain(added.iter())
             .cloned()
@@ -218,7 +224,7 @@ impl DRedMaintenance {
 
             let mut bindings: Vec<HashMap<String, u32>>;
             for rule in self.reasoner.rules.clone().iter() {
-                bindings = self.reasoner.evaluate_rule_with_delta_improved(rule, &difference, &delta);
+                bindings = join_rule(rule, &difference, &delta);
                 n_a.extend(self.construct_triple_from_bindings(rule, bindings));
             }
 
