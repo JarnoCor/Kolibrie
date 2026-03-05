@@ -85,7 +85,7 @@ pub fn join_rule(
             // NOTE: For a rule with one premise, use index 0 (not 1)
             if matches_rule_pattern(&rule.premise[i], fact, &mut binding) {
                 // Now join with the remaining premises (all j ≠ i)
-                let joined = join_remaining(rule, i, all_facts, binding);
+                let joined = join_remaining(rule, i, all_facts, delta, binding);
                 results.extend(joined);
             }
         }
@@ -98,10 +98,13 @@ fn join_remaining(
     rule: &Rule,
     changed_idx: usize,
     all_facts: &HashSet<Triple>,
+    delta: &HashSet<Triple>,
     binding: HashMap<String, u32>,
 ) -> Vec<HashMap<String, u32>> {
     let mut results = vec![binding];
     let n = rule.premise.len();
+
+    let difference: HashSet<Triple> = all_facts.iter().filter(|triple| !delta.contains(triple)).cloned().collect();
 
     // For each other premise j (order can be arbitrary)
     for j in 0..n {
@@ -112,10 +115,19 @@ fn join_remaining(
         // For every binding so far
         for partial_binding in results.into_iter() {
             // And for every fact in all_facts
-            for fact in all_facts.iter() {
-                let mut b = partial_binding.clone();
-                if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
-                    new_results.push(b);
+            if j > changed_idx {
+                for fact in all_facts.iter() {
+                    let mut b = partial_binding.clone();
+                    if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
+                        new_results.push(b);
+                    }
+                }
+            } else {
+                for fact in difference.iter() {
+                    let mut b = partial_binding.clone();
+                    if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
+                        new_results.push(b);
+                    }
                 }
             }
         }

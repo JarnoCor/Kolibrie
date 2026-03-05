@@ -28,9 +28,9 @@ use shared::terms::TriplePattern;
 use shared::triple::Triple;
 
 use crate::reasoning::convert_string_binding_to_u32;
-use crate::reasoning::materialisation::replace_variables_with_bound_values;
 use crate::reasoning::rules::evaluate_filters;
 use crate::reasoning::rules::join_premise_with_hash_join;
+use crate::reasoning::rules::join_rule;
 
 /// Convert rule evaluation to use the optimized hash join
 /// Optimised hash-join: return early when build map is empty (see for loop)
@@ -57,23 +57,23 @@ fn find_premise_solutions(dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple
         .collect()
 }
 
-fn construct_triple_from_bindings(dict: &mut Dictionary, rule: &Rule, bindings: &Vec<HashMap<String, u32>>) -> HashSet<Triple> {
-    let mut result: HashSet<Triple> = HashSet::new();
-    let mut inferred: Triple;
+// fn construct_triple_from_bindings(dict: &mut Dictionary, rule: &Rule, bindings: &Vec<HashMap<String, u32>>) -> HashSet<Triple> {
+//     let mut result: HashSet<Triple> = HashSet::new();
+//     let mut inferred: Triple;
 
-    for binding in bindings {
-        // check if the binding adheres to the filters of the rule
-        if evaluate_filters(binding, &rule.filters, dict) {
+//     for binding in bindings {
+//         // check if the binding adheres to the filters of the rule
+//         if evaluate_filters(binding, &rule.filters, dict) {
 
-            for conclusion in &rule.conclusion {
-                inferred = replace_variables_with_bound_values(conclusion, &binding, dict);
-                result.insert(inferred);
-            }
-        }
-    }
+//             for conclusion in &rule.conclusion {
+//                 inferred = replace_variables_with_bound_values(conclusion, &binding, dict);
+//                 result.insert(inferred);
+//             }
+//         }
+//     }
 
-    result
-}
+//     result
+// }
 
 
 /// Construct a new Triple from a conclusion pattern and bound variables
@@ -120,4 +120,75 @@ fn construct_triple(
         predicate,
         object,
     }
+}
+
+fn evaluate_rule_with_restrictions(dict: &mut Dictionary, rule: &Rule, positive_facts: &HashSet<Triple>, positive_1: &HashSet<Triple>, positive_2: &HashSet<Triple>) -> Vec<Triple> {
+
+    let bindings = join_rule(rule, positive_facts, positive_1);
+
+    let mut results = Vec::new();
+
+
+    for binding in bindings {
+        // check if the bindings are disjoint with positive_2 or not
+        if check_bindings(dict, rule, &binding, positive_2) {
+            // check if the binding adheres to the filters of the rule
+            if evaluate_filters(&binding, &rule.filters, dict) {
+                for conclusion in &rule.conclusion {
+                    let inferred = construct_triple(conclusion, &binding, dict);
+
+                    results.push(inferred);
+                }
+            }
+        }
+    }
+
+    results
+}
+
+fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, u32>, positive: &HashSet<Triple>) -> bool {
+
+        for triple in &rule.premise {
+            let subject = match &triple.0{
+                Term::Variable(v) => {
+                    binding.get(v).copied().unwrap_or_else(|| {
+                        eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
+                        0
+                    })
+                },
+                Term::Constant(c) => *c,
+            };
+
+            let predicate = match &triple.1 {
+                Term::Variable(v) => {
+                    dict.encode(v)
+                },
+                Term::Constant(c) => *c,
+            };
+
+            let object = match &triple.2 {
+                Term::Variable(v) => {
+                    // Check if this variable is bound in the current context
+                    if let Some(&bound_value) = binding.get(v) {
+                        bound_value
+                    } else {
+                        // If not bound, create a new placeholder in the dictionary
+                        dict.encode(&format!("ml_output_placeholder_{}", v))
+                    }
+                },
+                Term::Constant(c) => *c,
+            };
+
+            let constructed = Triple {
+                subject,
+                predicate,
+                object,
+            };
+
+            if positive.contains(&constructed) {
+                return true;
+            }
+    }
+
+    false
 }

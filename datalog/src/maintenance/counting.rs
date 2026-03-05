@@ -1,5 +1,6 @@
-use crate::reasoning::{Reasoner, construct_triple};
-use crate::reasoning::{evaluate_filters};
+use crate::maintenance::{construct_triple, evaluate_rule_with_restrictions};
+use crate::reasoning::Reasoner;
+use crate::reasoning::rules::{evaluate_filters, join_rule};
 
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
@@ -108,7 +109,7 @@ impl CountingMaintenance {
 
             for rule in self.reasoner.rules.clone() {
                 // evaluate the rule using the facts in delta
-                bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &all_facts.iter().cloned().collect(), &Vec::from_iter(delta.clone()));
+                bindings = join_rule(&rule, &all_facts, &delta);
 
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
@@ -272,8 +273,8 @@ impl CountingMaintenance {
             */
 
             // calculate the symmetric differences, this is for the second part of the task described above
-            let symm_diff1: Vec<Triple> = i_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_new).cloned().collect();
-            let symm_diff2: Vec<Triple> = delta_old.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_new).cloned().collect();
+            let symm_diff1: HashSet<Triple> = i_o.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_new).cloned().collect();
+            let symm_diff2: HashSet<Triple> = delta_old.intersection(&i_n).cloned().collect::<HashSet<Triple>>().difference(&delta_new).cloned().collect();
 
             let mut removed_this_iteration: Vec<Triple> = Vec::new();
             let mut bindings: Vec<HashMap<String, u32>>;
@@ -282,10 +283,15 @@ impl CountingMaintenance {
             // for each rule, calculate which facts are no longer derived from it
             for rule in self.reasoner.rules.clone() {
                 // this is the first part of the task as described above
-                removed_this_iteration.extend(self.reasoner.evaluate_rule_with_restrictions(&rule, &i_o, &delta_old, &i_on).into_iter());
+                let dictionary = &self.reasoner.dictionary;
+                let mut dictionary = dictionary.write().unwrap();
+
+                removed_this_iteration.extend(evaluate_rule_with_restrictions(&mut dictionary, &rule, &i_o, &delta_old, &i_on).into_iter());
+
+                drop(dictionary);
 
                 // this is the second part of the task as described above
-                bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &symm_diff1, &symm_diff2);
+                bindings = join_rule(&rule, &symm_diff1, &symm_diff2);
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
                     if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
@@ -307,8 +313,8 @@ impl CountingMaintenance {
             */
 
             // calculate the symmetric differences, this is for the second part of the task described above
-            let symm_diff1: Vec<Triple> = i_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_old).cloned().collect();
-            let symm_diff2: Vec<Triple> = delta_new.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_old).cloned().collect();
+            let symm_diff1: HashSet<Triple> = i_n.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_old).cloned().collect();
+            let symm_diff2: HashSet<Triple> = delta_new.intersection(&i_o).cloned().collect::<HashSet<Triple>>().difference(&delta_old).cloned().collect();
 
             let mut added_this_iteration: Vec<Triple> = Vec::new();
             let mut bindings: Vec<HashMap<String, u32>>;
@@ -317,10 +323,15 @@ impl CountingMaintenance {
             // for each rule, calculate which facts are newly derived from it
             for rule in self.reasoner.rules.clone() {
                 // this is the first part of the task as described above
-                added_this_iteration.extend(self.reasoner.evaluate_rule_with_restrictions(&rule, &i_n, &delta_new, &i_no).into_iter());
+                let dictionary = &self.reasoner.dictionary;
+                let mut dictionary = dictionary.write().unwrap();
+
+                added_this_iteration.extend(evaluate_rule_with_restrictions(&mut dictionary, &rule, &i_n, &delta_new, &i_no).into_iter());
+
+                drop(dictionary);
 
                 // this is the second part of the task as described above
-                bindings = self.reasoner.evaluate_rule_with_delta_improved(&rule, &symm_diff1, &symm_diff2);
+                bindings = join_rule(&rule, &symm_diff1, &symm_diff2);
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
                     if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
