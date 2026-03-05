@@ -8,11 +8,13 @@
 */
 
 use crate::rsp::r2r::R2ROperator;
+use crate::rsp::r2s::Relation2StreamOperator;
 use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick};
 
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
 use shared::query::{Fallback, SyncPolicy};
+use shared::rule::Rule;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -24,6 +26,7 @@ use std::time::Instant;
 #[cfg(test)]
 use std::{println as debug, println as error};
 
+use crate::parser::process_rule_definition;
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::{ExecutionEngine, LogicalOperator, PhysicalOperator};
 
@@ -100,6 +103,9 @@ macro_rules! create_window_processor {
                 store.add(t);
             }
 
+            // Run forward-chaining inference to materialise derived facts
+            store.materialize();
+
             let results = store.execute_query(&$query);
             debug!("Got # results {} for window {}", results.len(), $window_iri);
 
@@ -129,9 +135,7 @@ macro_rules! create_window_processor {
                     error!("Failed to send window result to buffer: {:?}", e);
                 }
             } else {
-                for res in results {
-                    ($r2s_consumer_func)(res);
-                }
+                ($r2s_consumer_func)(results, ts);
             }
         }
     }};
@@ -183,6 +187,8 @@ where
     sync_policy: SyncPolicy,
     /// Separate store for static background triples (never touched by window processors).
     static_db: Arc<Mutex<SparqlDatabase>>,
+    /// R2S operator for stream-type filtering (RSTREAM/ISTREAM/DSTREAM).
+    r2s_operator: Arc<Mutex<Relation2StreamOperator<O>>>,
 }
 
 impl<I, O> RSPEngine<I, O>
@@ -201,6 +207,8 @@ where
         query_execution_mode: QueryExecutionMode,
         rsp_query_plan: RSPQueryPlan,
         sync_policy: SyncPolicy,
+        reasoning_rules: Vec<Rule>,
+        sparql_rules: Vec<String>,
     ) -> RSPEngine<I, O> {
         let mut store = r2r;
 
@@ -245,6 +253,33 @@ where
             Err(e) => error!("Failed to load rules: {:?}", e),
         }
 
+        if !reasoning_rules.is_empty() {
+            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                simple_r2r.add_reasoning_rules(reasoning_rules);
+            }
+        }
+
+        if !sparql_rules.is_empty() {
+            if let Some(dict) = store
+                .as_any_mut()
+                .downcast_mut::<SimpleR2R>()
+                .map(|s| Arc::clone(&s.item.dictionary))
+            {
+                for rule_str in &sparql_rules {
+                    let mut temp_db = SparqlDatabase::new();
+                    temp_db.dictionary = Arc::clone(&dict);
+                    match process_rule_definition(rule_str, &mut temp_db) {
+                        Ok((rule, _)) => {
+                            if let Some(simple_r2r) = store.as_any_mut().downcast_mut::<SimpleR2R>() {
+                                simple_r2r.rules.push(rule);
+                            }
+                        }
+                        Err(e) => error!("Failed to parse SPARQL rule: {:?}", e),
+                    }
+                }
+            }
+        }
+
         // Create windows based on parsed configuration
         let mut windows = Vec::new();
         for window_config in &query_config.windows {
@@ -263,6 +298,9 @@ where
         // Create channel for cross-window result coordination
         let (result_sender, result_receiver) = unbounded::<WindowResult>();
 
+        let stream_type = query_config.stream_type.clone();
+        let r2s_operator = Arc::new(Mutex::new(Relation2StreamOperator::new(stream_type, 0)));
+
         let mut engine = RSPEngine {
             windows,
             r2r: Arc::new(Mutex::new(store)),
@@ -276,6 +314,7 @@ where
             single_thread_last_materialized: Arc::new(Mutex::new(HashMap::new())),
             sync_policy,
             static_db,
+            r2s_operator,
         };
 
         match operation_mode {
@@ -307,10 +346,17 @@ where
             let window_result_sender = self.window_result_sender.clone();
             let r2r_store = self.r2r.clone();
 
-            let r2s_consumer_func = if has_joins {
-                Arc::new(|_| {}) as Arc<dyn Fn(O) + Send + Sync>
+            let r2s_consumer_func: Arc<dyn Fn(Vec<O>, usize) + Send + Sync> = if has_joins {
+                Arc::new(|_, _| {})
             } else {
-                self.r2s_consumer.function.clone()
+                let r2s_op = Arc::clone(&self.r2s_operator);
+                let consumer_fn = self.r2s_consumer.function.clone();
+                Arc::new(move |results: Vec<O>, ts: usize| {
+                    let filtered = r2s_op.lock().unwrap().eval(results, ts);
+                    for r in filtered {
+                        (consumer_fn)(r);
+                    }
+                })
             };
 
             // Create processor using macro
@@ -348,6 +394,7 @@ where
         let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
         let static_db = self.static_db.clone();
         let sync_policy = self.sync_policy.clone();
+        let r2s_operator = Arc::clone(&self.r2s_operator);
 
         thread::spawn(move || {
             // Latest results per window (replace semantics)
@@ -356,6 +403,7 @@ where
             let mut cycle_triggered: HashSet<String> = HashSet::new();
             // When the first window fired in the current cycle
             let mut cycle_start: Option<Instant> = None;
+            let mut max_ts: usize = 0;
 
             loop {
                 // Compute recv timeout when policy has a finite deadline
@@ -376,7 +424,7 @@ where
                                 match &sync_policy {
                                     SyncPolicy::Timeout { fallback: Fallback::Steal, .. } => {
                                         if last_materialized.len() == num_windows {
-                                            emit_results(&last_materialized, &static_data_plan, &static_db, &consumer);
+                                            emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
                                         }
                                     }
                                     SyncPolicy::Timeout { fallback: Fallback::Drop, .. } => {
@@ -386,6 +434,7 @@ where
                                 }
                                 cycle_triggered.clear();
                                 cycle_start = None;
+                                max_ts = 0;
                             }
                             continue;
                         }
@@ -405,6 +454,7 @@ where
                         window_result.window_iri
                     );
 
+                    max_ts = max_ts.max(window_result.timestamp);
                     // Update last_materialized (replace)
                     last_materialized.insert(
                         window_result.window_iri.clone(),
@@ -417,24 +467,27 @@ where
 
                     // Drain any additional pending results
                     while let Ok(wr) = receiver.try_recv() {
+                        max_ts = max_ts.max(wr.timestamp);
                         last_materialized.insert(wr.window_iri.clone(), wr.results.clone());
                         cycle_triggered.insert(wr.window_iri.clone());
                     }
 
                     if cycle_triggered.len() == num_windows {
                         // All windows fired this cycle
-                        emit_results(&last_materialized, &static_data_plan, &static_db, &consumer);
+                        emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
                         cycle_triggered.clear();
                         cycle_start = None;
+                        max_ts = 0;
                     } else {
                         match &sync_policy {
                             SyncPolicy::Steal => {
                                 // Emit immediately using stale data from non-firing windows
                                 if last_materialized.len() == num_windows {
-                                    emit_results(&last_materialized, &static_data_plan, &static_db, &consumer);
+                                    emit_results(&last_materialized, &static_data_plan, &static_db, &r2s_operator, max_ts, &consumer);
                                 }
                                 cycle_triggered.clear();
                                 cycle_start = None;
+                                max_ts = 0;
                             }
                             SyncPolicy::Wait | SyncPolicy::Timeout { .. } => {
                                 // Keep waiting for remaining windows
@@ -504,7 +557,9 @@ where
         // Drain all pending channel results; update last_materialized with replace semantics.
         let mut last_mat = self.single_thread_last_materialized.lock().unwrap();
         let mut had_new_results = false;
+        let mut max_ts: usize = 0;
         while let Ok(window_result) = self.window_result_receiver.try_recv() {
+            max_ts = max_ts.max(window_result.timestamp);
             last_mat.insert(window_result.window_iri.clone(), window_result.results);
             had_new_results = true;
         }
@@ -517,7 +572,7 @@ where
         if last_mat.len() == num_windows {
             debug!("SingleThread: all {} windows materialized, emitting", num_windows);
             let static_data_plan = self.rsp_query_plan.static_data_plan.clone();
-            emit_results(&*last_mat, &static_data_plan, &self.static_db, &consumer);
+            emit_results(&*last_mat, &static_data_plan, &self.static_db, &self.r2s_operator, max_ts, &consumer);
 
             match sync_policy {
                 // Wait: require all windows to fire again before next emission.
@@ -586,15 +641,18 @@ where
     }
 }
 
-/// Join all window results, optionally apply the static-data join, and call `consumer` for each
-/// output binding.  Called from both the coordinator thread and the SingleThread processor.
+/// Join all window results, optionally apply the static-data join, apply the R2S operator,
+/// and call `consumer` for each output binding.
+/// Called from both the coordinator thread and the SingleThread processor.
 fn emit_results<O>(
     last_materialized: &HashMap<String, Vec<HashMap<String, String>>>,
     static_data_plan: &Option<PhysicalOperator>,
     static_db: &Arc<Mutex<SparqlDatabase>>,
+    r2s: &Arc<Mutex<Relation2StreamOperator<O>>>,
+    ts: usize,
     consumer: &Arc<dyn Fn(O) -> () + Send + Sync>,
 ) where
-    O: 'static + From<Vec<(String, String)>>,
+    O: 'static + Clone + Hash + Eq + From<Vec<(String, String)>>,
 {
     let joined = join_window_results(last_materialized);
 
@@ -606,10 +664,18 @@ fn emit_results<O>(
         joined
     };
 
-    debug!("emit_results: emitting {} bindings", final_results.len());
-    for binding in final_results {
-        let output: Vec<(String, String)> = binding.into_iter().collect();
-        (consumer)(output.into());
+    debug!("emit_results: emitting {} bindings before R2S filter", final_results.len());
+    let outputs: Vec<O> = final_results
+        .into_iter()
+        .map(|b| {
+            let mut kv: Vec<(String, String)> = b.into_iter().collect();
+            kv.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            kv.into()
+        })
+        .collect();
+    let filtered = r2s.lock().unwrap().eval(outputs, ts);
+    for result in filtered {
+        (consumer)(result);
     }
 }
 
