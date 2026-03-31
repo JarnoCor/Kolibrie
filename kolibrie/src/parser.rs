@@ -1159,26 +1159,13 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead<'_>> {
         input,
         RuleHead {
             predicate: pred,
-            arguments: all_vars,
         },
     ))
 }
 
 pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, pred) = predicate(input)?;
-    let (input, args) = opt(delimited(
-        char('('),
-        separated_list1((multispace0, char(','), multispace0), variable),
-        char(')'),
-    )).parse(input)?;
-    let arguments = args.unwrap_or_else(|| vec![]);
-    Ok((
-        input,
-        RuleHead {
-            predicate: pred,
-            arguments,
-        },
-    ))
+    Ok((input, RuleHead { predicate: pred }))
 }
 
 fn parse_balanced(input: &str) -> IResult<&str, &str> {
@@ -1525,13 +1512,54 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     }))
 }
 
+/// Parse a PROB(...) annotation for probabilistic rules.
+/// Format: PROB(combination=independent, threshold=0.3, confidence=0.9)
+fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
+    let (input, _) = tag("PROB").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+
+    let mut combination: &str = "independent";
+    let mut threshold: Option<f64> = None;
+    let mut confidence: Option<f64> = None;
+
+    // Parse key=value pairs separated by commas
+    let (input, kv_str) = take_until(")").parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+
+    for pair in kv_str.split(',') {
+        let pair = pair.trim();
+        if let Some((key, value)) = pair.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "combination" => combination = value,
+                "threshold" => threshold = value.parse::<f64>().ok(),
+                "confidence" => confidence = value.parse::<f64>().ok(),
+                _ => {} // Ignore unknown keys
+            }
+        }
+    }
+
+    Ok((input, ProbAnnotation {
+        combination,
+        threshold,
+        confidence,
+    }))
+}
+
 /// Parse a complete rule:
 ///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
+///   RULE :Name PROB(combination=independent, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
 pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
     let (input, head) = parse_rule_head(input)?;
     let (input, _) = multispace0.parse(input)?;
+
+    // Optionally parse PROB(...) annotation before :-
+    let (input, prob_annotation) = opt(terminated(parse_prob_annotation, multispace0)).parse(input)?;
 
     let (input, _) = tag(":-").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -1588,6 +1616,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
             body,
             conclusion: conclusions,
             ml_predict,
+            prob_annotation,
         },
     ))
 }
@@ -1892,45 +1921,43 @@ pub fn convert_combined_rule<'a>(
         println!("Stream Type: {:?}", stream_type);
     }
 
-    // Special handling for parameterless rules with ML.PREDICT
+    // Handle ML.PREDICT: wire output variable into conclusion triples
     if let Some(ml_predict) = &cr.ml_predict {
-        if cr.head.arguments.is_empty() {
-            println!("Processing parameterless rule with ML.PREDICT");
-            
-            let ml_output_var = ml_predict.output.trim_start_matches('?');
-            println!("ML output variable: ?{}", ml_output_var);
-            
-            // Check if the conclusion triples contain the ML output variable
-            for (i, conclusion) in conclusion_triples.iter_mut().enumerate() {
-                println!("Checking conclusion pattern {}: {:?}", i, conclusion);
-                
-                // Check if the conclusion contains variables that need ML output
-                match &mut conclusion.2 {
-                    Term::Variable(var) if var == ml_output_var => {
-                        println!("Found ML output variable ?{} in conclusion object position", ml_output_var);
-                    },
-                    Term::Variable(var) if var == "level" => {
-                        // Replace generic 'level' variable with ML output variable
-                        *var = ml_output_var.to_string();
-                        println!("Replaced ?level with ML output variable ?{}", ml_output_var);
-                    },
-                    _ => {}
-                }
-                
-                // Also check subject and predicate positions
-                match &mut conclusion.0 {
-                    Term::Variable(var) if var == ml_output_var => {
-                        println!("Found ML output variable ?{} in conclusion subject position", ml_output_var);
-                    },
-                    _ => {}
-                }
-                
-                match &mut conclusion.1 {
-                    Term::Variable(var) if var == ml_output_var => {
-                        println!("Found ML output variable ?{} in conclusion predicate position", ml_output_var);
-                    },
-                    _ => {}
-                }
+        println!("Processing rule with ML.PREDICT");
+
+        let ml_output_var = ml_predict.output.trim_start_matches('?');
+        println!("ML output variable: ?{}", ml_output_var);
+
+        // Check if the conclusion triples contain the ML output variable
+        for (i, conclusion) in conclusion_triples.iter_mut().enumerate() {
+            println!("Checking conclusion pattern {}: {:?}", i, conclusion);
+
+            // Check if the conclusion contains variables that need ML output
+            match &mut conclusion.2 {
+                Term::Variable(var) if var == ml_output_var => {
+                    println!("Found ML output variable ?{} in conclusion object position", ml_output_var);
+                },
+                Term::Variable(var) if var == "level" => {
+                    // Replace generic 'level' variable with ML output variable
+                    *var = ml_output_var.to_string();
+                    println!("Replaced ?level with ML output variable ?{}", ml_output_var);
+                },
+                _ => {}
+            }
+
+            // Also check subject and predicate positions
+            match &mut conclusion.0 {
+                Term::Variable(var) if var == ml_output_var => {
+                    println!("Found ML output variable ?{} in conclusion subject position", ml_output_var);
+                },
+                _ => {}
+            }
+
+            match &mut conclusion.1 {
+                Term::Variable(var) if var == ml_output_var => {
+                    println!("Found ML output variable ?{} in conclusion predicate position", ml_output_var);
+                },
+                _ => {}
             }
         }
     }
@@ -1939,6 +1966,29 @@ pub fn convert_combined_rule<'a>(
         premise: premise_patterns,
         filters: filter_conditions,
         conclusion: conclusion_triples,
+    }
+}
+
+/// Convert a CombinedRule with a PROB annotation into a ProbabilisticRule.
+pub fn convert_combined_rule_probabilistic<'a>(
+    cr: CombinedRule<'a>,
+    dict: &mut Dictionary,
+    prefixes: &HashMap<String, String>,
+) -> shared::probabilistic_rule::ProbabilisticRule {
+    let prob_ann = cr.prob_annotation.clone();
+    let base_rule = convert_combined_rule(cr, dict, prefixes);
+
+    if let Some(ann) = prob_ann {
+        let combination = shared::probabilistic_rule::parse_combination_mode(ann.combination)
+            .unwrap_or(shared::probabilistic_rule::ProbCombination::Independent);
+        shared::probabilistic_rule::ProbabilisticRule {
+            rule: base_rule,
+            combination,
+            threshold: ann.threshold.unwrap_or(0.0),
+            rule_confidence: ann.confidence.unwrap_or(1.0),
+        }
+    } else {
+        shared::probabilistic_rule::ProbabilisticRule::new(base_rule)
     }
 }
 
@@ -2061,21 +2111,41 @@ pub fn process_rule_definition(
             return Ok((dynamic_rule, all_stream_results));
         }
 
-        // Non-windowed rule processing (existing logic)
-        kg.add_rule(dynamic_rule.clone());
+        // Non-windowed rule processing
+        // Check if this is a probabilistic rule
+        if rule.prob_annotation.is_some() {
+            let mut dict = kg.dictionary.write().unwrap();
+            let prob_rule = convert_combined_rule_probabilistic(rule.clone(), &mut dict, &rule_prefixes);
+            drop(dict);
 
-        // Register rule predicates
-        register_rule_predicates(&dynamic_rule, database);
+            kg.add_probabilistic_rule(prob_rule);
 
-        // Infer new facts based on the rule
-        let inferred_facts = kg.infer_new_facts_semi_naive();
+            // Register rule predicates (using the classical rule for predicate tracking)
+            register_rule_predicates(&dynamic_rule, database);
 
-        // Add inferred facts to the database
-        for triple in inferred_facts.iter() {
-            database.triples.insert(triple.clone());
+            let inferred_facts = kg.infer_new_facts_probabilistic_semi_naive();
+
+            for triple in inferred_facts.iter() {
+                database.triples.insert(triple.clone());
+            }
+
+            Ok((dynamic_rule, inferred_facts))
+        } else {
+            kg.add_rule(dynamic_rule.clone());
+
+            // Register rule predicates
+            register_rule_predicates(&dynamic_rule, database);
+
+            // Infer new facts based on the rule
+            let inferred_facts = kg.infer_new_facts_semi_naive();
+
+            // Add inferred facts to the database
+            for triple in inferred_facts.iter() {
+                database.triples.insert(triple.clone());
+            }
+
+            Ok((dynamic_rule, inferred_facts))
         }
-
-        Ok((dynamic_rule, inferred_facts))
     } else {
         Err("Failed to parse rule definition".to_string())
     }

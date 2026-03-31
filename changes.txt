@@ -16,6 +16,10 @@
 15. Add N-Triples-star and Turtle-star serialization (generate_ntriples, generate_turtle)
 16. Improve Streamertail optimizer with quoted triple cardinality estimation
 17. Fix ArithmeticExpression support in FILTER (properly store and evaluate AST instead of raw strings)
+18. Add probabilistic RULE syntax with PROB annotations (combination, threshold, confidence)
+19. Add ProbabilityStore for per-triple confidence score tracking
+20. Add probabilistic semi-naive materialisation algorithm
+21. Fix literal-in-quoted-triple bug in parse_ntriples_line
 
 0.1.1
 1. Modify whole project by making Cargo workspace

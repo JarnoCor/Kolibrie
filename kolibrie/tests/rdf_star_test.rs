@@ -70,6 +70,21 @@ fn test_ntriples_star_multiple_quoted_triples() {
     assert_eq!(qt.len(), 2, "Should have two quoted triples");
 }
 
+#[test]
+fn test_ntriples_star_literal_in_quoted_triple() {
+    // Regression: literals inside << >> used to trigger premature parts.push,
+    // producing 4 parts instead of 3 and silently discarding the triple.
+    let mut db = SparqlDatabase::new();
+    let ntriples = r#"<< <http://example.org/sensor/S1> <http://example.org/temperature> "92" >> <http://example.org/reliability> "0.95" .
+<< <http://example.org/sensor/S2> <http://example.org/temperature> "71" >> <http://example.org/reliability> "0.80" .
+"#;
+    db.parse_ntriples_and_add(ntriples);
+
+    assert_eq!(db.triples.len(), 2, "Should have two outer triples (literal-in-qt bug)");
+    let qt = db.quoted_triple_store.read().unwrap();
+    assert_eq!(qt.len(), 2, "Should have two quoted triples");
+}
+
 // Turtle-star parsing tests
 #[test]
 fn test_turtle_star_basic() {

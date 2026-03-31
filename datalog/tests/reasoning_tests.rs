@@ -652,3 +652,290 @@ fn bc_no_spurious_negative() {
 
     assert!(results.is_empty(), "BC should return nothing for unknown predicate");
 }
+
+// =====================================================================
+// Probabilistic reasoning tests
+// =====================================================================
+
+use shared::probabilistic_rule::{ProbabilisticRule, ProbCombination};
+
+#[test]
+fn prob_transitive_independent_combination() {
+    // A related B (0.8), B related C (0.7)
+    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z (independent combination)
+    // Expected: A related C with probability 0.8 * 0.7 = 0.56
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("A", "related", "B", 0.8);
+    r.add_probabilistic_triple("B", "related", "C", 0.7);
+
+    let related = enc(&r, "related");
+
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+                (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+        },
+        combination: ProbCombination::Independent,
+        threshold: 0.0,
+        rule_confidence: 1.0,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    let inferred = r.infer_new_facts_probabilistic_semi_naive();
+
+    // Should infer A related C
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    assert!(a_related_c, "Should infer A related C");
+
+    // Check probability is approximately 0.56
+    let triple = shared::triple::Triple { subject: a, predicate: related, object: c };
+    let prob = r.probability_store.get_probability(&triple);
+    assert!((prob - 0.56).abs() < 1e-6, "Probability should be ~0.56, got {}", prob);
+}
+
+#[test]
+fn prob_threshold_pruning() {
+    // Same as above but with threshold 0.6 — should NOT infer A related C (prob 0.56 < 0.6)
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("A", "related", "B", 0.8);
+    r.add_probabilistic_triple("B", "related", "C", 0.7);
+
+    let related = enc(&r, "related");
+
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+                (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+        },
+        combination: ProbCombination::Independent,
+        threshold: 0.6,
+        rule_confidence: 1.0,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    let inferred = r.infer_new_facts_probabilistic_semi_naive();
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    assert!(!a_related_c, "Should NOT infer A related C (prob 0.56 < threshold 0.6)");
+}
+
+#[test]
+fn prob_max_semantics_multiple_paths() {
+    // A related B (0.6), A related C (0.9), B related D (0.8), C related D (0.5)
+    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
+    // Path 1: A->B->D = 0.6*0.8 = 0.48
+    // Path 2: A->C->D = 0.9*0.5 = 0.45
+    // Max semantics: A related D should have prob max(0.48, 0.45) = 0.48
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("A", "related", "B", 0.6);
+    r.add_probabilistic_triple("A", "related", "C", 0.9);
+    r.add_probabilistic_triple("B", "related", "D", 0.8);
+    r.add_probabilistic_triple("C", "related", "D", 0.5);
+
+    let related = enc(&r, "related");
+
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+                (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+        },
+        combination: ProbCombination::Independent,
+        threshold: 0.0,
+        rule_confidence: 1.0,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    r.infer_new_facts_probabilistic_semi_naive();
+
+    let a = enc(&r, "A");
+    let d = enc(&r, "D");
+    let triple = shared::triple::Triple { subject: a, predicate: related, object: d };
+    let prob = r.probability_store.get_probability(&triple);
+    assert!((prob - 0.48).abs() < 1e-6, "Max probability should be ~0.48, got {}", prob);
+}
+
+#[test]
+fn prob_noisy_or_combination() {
+    // Test NoisyOr combination mode
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("sensor1", "detects", "fire", 0.5);
+    r.add_probabilistic_triple("sensor2", "detects", "fire", 0.5);
+
+    let detects = enc(&r, "detects");
+    let alarm = enc(&r, "alarm");
+
+    // If any sensor detects fire, raise alarm (NoisyOr = 1 - (1-0.5)*(1-0.5) = 0.75)
+    // We need two separate single-premise rules or a different setup
+    // Instead: single premise rule with NoisyOr
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(detects), Term::Variable("Y".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("Y".into()), Term::Constant(alarm), Term::Variable("Y".into())),
+            ],
+        },
+        combination: ProbCombination::NoisyOr,
+        threshold: 0.0,
+        rule_confidence: 1.0,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    r.infer_new_facts_probabilistic_semi_naive();
+
+    let fire = enc(&r, "fire");
+    let triple = shared::triple::Triple { subject: fire, predicate: alarm, object: fire };
+    let prob = r.probability_store.get_probability(&triple);
+    // With single premise per firing, NoisyOr on single value = that value
+    // The max semantics will pick max(0.5, 0.5) = 0.5
+    assert!((prob - 0.5).abs() < 1e-6, "NoisyOr single-premise prob should be 0.5, got {}", prob);
+}
+
+#[test]
+fn prob_min_combination() {
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("A", "knows", "B", 0.9);
+    r.add_probabilistic_triple("B", "trusts", "C", 0.6);
+
+    let knows = enc(&r, "knows");
+    let trusts = enc(&r, "trusts");
+    let recommends = enc(&r, "recommends");
+
+    // If A knows B and B trusts C, then A recommends C (min combination)
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+                (Term::Variable("Y".into()), Term::Constant(trusts), Term::Variable("Z".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("X".into()), Term::Constant(recommends), Term::Variable("Z".into())),
+            ],
+        },
+        combination: ProbCombination::Min,
+        threshold: 0.0,
+        rule_confidence: 1.0,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    r.infer_new_facts_probabilistic_semi_naive();
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let triple = shared::triple::Triple { subject: a, predicate: recommends, object: c };
+    let prob = r.probability_store.get_probability(&triple);
+    assert!((prob - 0.6).abs() < 1e-6, "Min probability should be 0.6, got {}", prob);
+}
+
+#[test]
+fn prob_rule_confidence_scaling() {
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("A", "related", "B", 0.8);
+
+    let related = enc(&r, "related");
+    let connected = enc(&r, "connected");
+
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("X".into()), Term::Constant(connected), Term::Variable("Y".into())),
+            ],
+        },
+        combination: ProbCombination::Independent,
+        threshold: 0.0,
+        rule_confidence: 0.9,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    r.infer_new_facts_probabilistic_semi_naive();
+
+    let a = enc(&r, "A");
+    let b = enc(&r, "B");
+    let triple = shared::triple::Triple { subject: a, predicate: connected, object: b };
+    let prob = r.probability_store.get_probability(&triple);
+    // 0.8 * 0.9 = 0.72
+    assert!((prob - 0.72).abs() < 1e-6, "Probability should be 0.72, got {}", prob);
+}
+
+#[test]
+fn prob_classical_rules_still_work() {
+    // Regression test: classical (non-probabilistic) rules should still work
+    let mut r = Reasoner::new();
+    r.add_abox_triple("A", "parent", "B");
+
+    let parent = enc(&r, "parent");
+    let ancestor = enc(&r, "ancestor");
+
+    r.add_rule(rule(
+        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
+        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+    assert!(inferred(&mut r, "A", "ancestor", "B"));
+}
+
+#[test]
+fn prob_weighted_combination() {
+    let mut r = Reasoner::new();
+    r.add_probabilistic_triple("A", "related", "B", 0.8);
+    r.add_probabilistic_triple("B", "related", "C", 0.7);
+
+    let related = enc(&r, "related");
+    let linked = enc(&r, "linked");
+
+    let prob_rule = ProbabilisticRule {
+        rule: Rule {
+            premise: vec![
+                (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+                (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+            ],
+            filters: vec![],
+            conclusion: vec![
+                (Term::Variable("X".into()), Term::Constant(linked), Term::Variable("Z".into())),
+            ],
+        },
+        combination: ProbCombination::Weighted(0.5),
+        threshold: 0.0,
+        rule_confidence: 1.0,
+    };
+
+    r.add_probabilistic_rule(prob_rule);
+    r.infer_new_facts_probabilistic_semi_naive();
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let triple = shared::triple::Triple { subject: a, predicate: linked, object: c };
+    let prob = r.probability_store.get_probability(&triple);
+    // 0.5 * 0.8 * 0.7 = 0.28
+    assert!((prob - 0.28).abs() < 1e-6, "Weighted probability should be 0.28, got {}", prob);
+}

@@ -8,6 +8,8 @@ pub mod semi_naive;
 pub mod my_naive;
 pub mod semi_naive_parallel;
 pub mod semi_naive_with_repairs;
+pub mod probabilistic_infer_generic;
+pub mod probabilistic_semi_naive;
 
 ///
 fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {

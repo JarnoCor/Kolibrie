@@ -95,7 +95,6 @@ pub struct SubQuery<'a> {
 #[derive(Debug, Clone)]
 pub struct RuleHead<'a> {
     pub predicate: &'a str,
-    pub arguments: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +190,15 @@ pub struct WindowBlock<'a> {
     pub patterns: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+/// Probability annotation for a RULE.
+/// Parsed from: PROB(combination=independent, threshold=0.3, confidence=0.9)
+#[derive(Clone, Debug)]
+pub struct ProbAnnotation<'a> {
+    pub combination: &'a str,
+    pub threshold: Option<f64>,
+    pub confidence: Option<f64>,
+}
+
 // Modified CombinedRule to include windowing
 #[derive(Clone, Debug)]
 pub struct CombinedRule<'a> {
@@ -206,6 +214,7 @@ pub struct CombinedRule<'a> {
     ),
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
+    pub prob_annotation: Option<ProbAnnotation<'a>>, // probabilistic rule annotation
 }
 
 // Add these new enums and structs
