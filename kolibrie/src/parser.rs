@@ -1512,8 +1512,9 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     }))
 }
 
-/// Parse a PROB(...) annotation for probabilistic rules.
-/// Format: PROB(combination=independent, threshold=0.3, confidence=0.9)
+/// Parse a PROB(...) annotation for provenance rules.
+/// Format: PROB(provenance=minmax, threshold=0.3, confidence=0.9)
+/// Legacy alias: PROB(combination=independent, threshold=0.3, confidence=0.9)
 fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
     let (input, _) = tag("PROB").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -1534,7 +1535,7 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
             let key = key.trim();
             let value = value.trim();
             match key {
-                "combination" => combination = value,
+                "combination" | "provenance" => combination = value,
                 "threshold" => threshold = value.parse::<f64>().ok(),
                 "confidence" => confidence = value.parse::<f64>().ok(),
                 _ => {} // Ignore unknown keys
@@ -1552,6 +1553,7 @@ fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
 /// Parse a complete rule:
 ///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
 ///   RULE :Name PROB(combination=independent, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
+///   RULE :Name PROB(provenance=minmax, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
 pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
@@ -1969,28 +1971,6 @@ pub fn convert_combined_rule<'a>(
     }
 }
 
-/// Convert a CombinedRule with a PROB annotation into a ProbabilisticRule.
-pub fn convert_combined_rule_probabilistic<'a>(
-    cr: CombinedRule<'a>,
-    dict: &mut Dictionary,
-    prefixes: &HashMap<String, String>,
-) -> shared::probabilistic_rule::ProbabilisticRule {
-    let prob_ann = cr.prob_annotation.clone();
-    let base_rule = convert_combined_rule(cr, dict, prefixes);
-
-    if let Some(ann) = prob_ann {
-        let combination = shared::probabilistic_rule::parse_combination_mode(ann.combination)
-            .unwrap_or(shared::probabilistic_rule::ProbCombination::Independent);
-        shared::probabilistic_rule::ProbabilisticRule {
-            rule: base_rule,
-            combination,
-            threshold: ann.threshold.unwrap_or(0.0),
-            rule_confidence: ann.confidence.unwrap_or(1.0),
-        }
-    } else {
-        shared::probabilistic_rule::ProbabilisticRule::new(base_rule)
-    }
-}
 
 pub fn process_rule_definition(
     rule_input: &str,
@@ -2112,18 +2092,83 @@ pub fn process_rule_definition(
         }
 
         // Non-windowed rule processing
-        // Check if this is a probabilistic rule
+        // Check if this is a provenance-annotated rule
         if rule.prob_annotation.is_some() {
-            let mut dict = kg.dictionary.write().unwrap();
-            let prob_rule = convert_combined_rule_probabilistic(rule.clone(), &mut dict, &rule_prefixes);
-            drop(dict);
+            let ann = rule.prob_annotation.as_ref().unwrap();
 
-            kg.add_probabilistic_rule(prob_rule);
-
-            // Register rule predicates (using the classical rule for predicate tracking)
+            kg.add_rule(dynamic_rule.clone());
             register_rule_predicates(&dynamic_rule, database);
 
-            let inferred_facts = kg.infer_new_facts_probabilistic_semi_naive();
+            // Choose provenance based on annotation, then materialize tags as RDF-star
+            let provenance_type = ann.combination;
+            let inferred_facts = match provenance_type {
+                "minmax" | "min" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                "addmult" | "independent" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::AddMultProbability);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                "boolean" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::BooleanProvenance);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                // Top-K proof-tracking provenance.
+                // k is read from the threshold field (default 5).
+                // Syntax: PROB(combination=topk) or PROB(combination=topk, threshold=10)
+                "topk" => {
+                    let k = ann.threshold.map(|t| t as usize).unwrap_or(5);
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(
+                        shared::provenance::TopKProofs::new(k)
+                    );
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                _ => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+            };
 
             for triple in inferred_facts.iter() {
                 database.triples.insert(triple.clone());
@@ -2281,4 +2326,3 @@ fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
         }
     }
 }
-

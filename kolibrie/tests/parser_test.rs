@@ -354,6 +354,33 @@ WHERE {
     }
 
     #[test]
+    fn test_rule_with_prob_annotation_provenance_alias() {
+        let input = r#"RULE :CriticalRisk PROB(provenance=minmax, threshold=0.5) :-
+CONSTRUCT {
+    ?x ex:risk true .
+}
+WHERE {
+    ?x ex:score ?s .
+    FILTER (?s > 80)
+}"#;
+
+        let result = parse_rule(input);
+        assert!(
+            result.is_ok(),
+            "Failed to parse RULE with provenance PROB alias: {:?}",
+            result.err()
+        );
+
+        let (_, rule) = result.unwrap();
+        let prob = rule
+            .prob_annotation
+            .as_ref()
+            .expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "minmax");
+        assert!((prob.threshold.unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
     fn test_rule_without_prob_annotation_still_works() {
         // Regression: rules without PROB should parse identically to before
         let input = r#"RULE :SimpleRule :-
@@ -401,4 +428,26 @@ WHERE {
         assert_eq!(patterns[0].1, "?p");
         assert_eq!(patterns[0].2, "?o");
     }
+
+    #[test]
+    fn test_rule_with_prob_annotation_topk() {
+        let input = r#"RULE :TopKRule PROB(combination=topk, threshold=5) :-
+CONSTRUCT {
+    ?x ex:related ?z .
+}
+WHERE {
+    ?x ex:related ?y .
+    ?y ex:related ?z .
+}"#;
+
+        let result = parse_rule(input);
+        assert!(result.is_ok(), "Failed to parse RULE with topk PROB: {:?}", result.err());
+
+        let (_, rule) = result.unwrap();
+        let prob = rule.prob_annotation.as_ref().expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "topk");
+        assert!((prob.threshold.unwrap() - 5.0).abs() < 1e-9);
+        assert!(prob.confidence.is_none());
+    }
+
 }

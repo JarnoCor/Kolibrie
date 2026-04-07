@@ -20,5 +20,5 @@ pub mod rule;
 pub mod query;
 pub mod join_algorithm;
 pub mod quoted_triple_store;
-pub mod probability_store;
-pub mod probabilistic_rule;
+pub mod provenance;
+pub mod tag_store;

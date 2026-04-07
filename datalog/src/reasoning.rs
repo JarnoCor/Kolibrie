@@ -20,8 +20,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use shared::index_manager::*;
 use shared::rule_index::RuleIndex;
 use shared::rule::Rule;
-use shared::probabilistic_rule::ProbabilisticRule;
-use shared::probability_store::ProbabilityStore;
+use shared::provenance::Provenance;
+use shared::tag_store::TagStore;
 use std::sync::Arc;
 use std::sync::RwLock;
 use crate::reasoning::rules::join_rule;
@@ -33,12 +33,11 @@ use crate::reasoning::rules::join_rule;
 pub struct Reasoner {
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub rules: Vec<Rule>, // List of dynamic rules
-    pub probabilistic_rules: Vec<ProbabilisticRule>, // Probabilistic rules with confidence/threshold
 
     pub index_manager: UnifiedIndex,
     pub rule_index: RuleIndex,
     pub constraints: Vec<Rule>,
-    pub probability_store: ProbabilityStore, // Triple -> probability mapping
+    pub probability_seeds: HashMap<Triple, f64>, // Input probabilities for provenance seeding
 }
 
 pub fn convert_string_binding_to_u32(
@@ -59,17 +58,16 @@ impl Reasoner {
         Self {
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             rules: Vec::new(),
-            probabilistic_rules: Vec::new(),
             index_manager: UnifiedIndex::new(),
             rule_index: RuleIndex::new(),
             constraints: Vec::new(),
-            probability_store: ProbabilityStore::new(),
+            probability_seeds: HashMap::new(),
         }
     }
 
     /// Add a triple with an associated probability value.
-    /// The triple is added to the index as usual; the probability is stored separately.
-    pub fn add_probabilistic_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+    /// The triple is added to the index; the probability is stored for provenance seeding.
+    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
         let mut dict = self.dictionary.write().unwrap();
         let s = dict.encode(subject);
         let p = dict.encode(predicate);
@@ -78,20 +76,15 @@ impl Reasoner {
 
         let triple = Triple { subject: s, predicate: p, object: o };
         self.index_manager.insert(&triple);
-        self.probability_store.set_probability(&triple, probability);
+        self.probability_seeds.insert(triple, probability);
     }
 
-    /// Register a probabilistic rule for inference.
-    pub fn add_probabilistic_rule(&mut self, rule: ProbabilisticRule) {
-        self.probabilistic_rules.push(rule);
-    }
-
-    /// Materialize probabilities as RDF-star triples so they are queryable via SPARQL-star.
+    /// Materialize provenance tags as RDF-star triples so they are queryable via SPARQL-star.
     /// Generates triples of the form: << s p o >> <prob:value> "0.7"^^xsd:double
-    pub fn materialize_probabilities_as_rdf_star(&mut self) {
+    pub fn materialize_tags_as_rdf_star<P: Provenance>(&mut self, tag_store: &TagStore<P>) {
         let mut dict = self.dictionary.write().unwrap();
         let mut qt_store = shared::quoted_triple_store::QuotedTripleStore::new();
-        let rdf_star_triples = self.probability_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+        let rdf_star_triples = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
         drop(dict);
 
         for triple in &rdf_star_triples {

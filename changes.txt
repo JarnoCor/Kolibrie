@@ -20,6 +20,9 @@
 19. Add ProbabilityStore for per-triple confidence score tracking
 20. Add probabilistic semi-naive materialisation algorithm
 21. Fix literal-in-quoted-triple bug in parse_ntriples_line
+22. Add provenance semiring framework and TagStore for semiring-based reasoning
+23. Remove old probabilistic reasoning path and migrate RULE PROB inference to provenance-based materialisation
+24. Update combined syntax and combined rules examples to use provenance reasoning
 
 0.1.1
 1. Modify whole project by making Cargo workspace

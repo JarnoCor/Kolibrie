@@ -8,14 +8,14 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Combined SPARQL / RDF-star / RULE / Probabilistic-RULE example
+//! Combined SPARQL / RDF-star / RULE / Provenance-RULE example
 //!
 //! Demonstrates all four syntax elements communicating in a single file:
 //!
 //!   1. Standard RDF triples + SPARQL SELECT queries
 //!   2. RDF-star quoted triples + SPARQL-star SELECT queries
 //!   3. Classical RULE syntax  (deterministic inference)
-//!   4. Probabilistic RULE … PROB(…) syntax  (probabilistic inference)
+//!   4. Provenance-annotated RULE … PROB(…) syntax  (provenance-based inference)
 //!
 //! Communication chain
 //! ───────────────────
@@ -29,7 +29,7 @@ use kolibrie::execute_query::*;
 use kolibrie::sparql_database::SparqlDatabase;
 
 fn main() {
-    println!("=== Combined SPARQL / RDF-star / RULE / Probabilistic RULE Example ===\n");
+    println!("=== Combined SPARQL / RDF-star / RULE / Provenance RULE Example ===\n");
 
     let mut database = SparqlDatabase::new();
     println!("[Stage 1] Loading base RDF facts (standard triples)...");
@@ -153,15 +153,15 @@ SELECT ?sensor WHERE {
         }
     }
 
-    println!("\n[Stage 6] Probabilistic RULE :CriticalRisk PROB(combination=min, threshold=0.45, confidence=0.90)...");
+    println!("\n[Stage 6] Provenance RULE :CriticalRisk PROB(combination=minmax)...");
     println!("  (Uses Stage 4 output — overheatAlert — as a premise!)");
-    println!("  RULE :CriticalRisk PROB(combination=min, threshold=0.45, confidence=0.90) :-");
+    println!("  RULE :CriticalRisk PROB(combination=minmax) :-");
     println!("    CONSTRUCT {{ ?sensor ex:criticalRisk true . }}");
     println!("    WHERE     {{ ?sensor ex:overheatAlert true ; ex:pressure ?p . FILTER(?p > 130) }}");
 
     let prob_rule = r#"PREFIX ex: <http://example.org/>
 
-RULE :CriticalRisk PROB(combination=min, threshold=0.45, confidence=0.90) :-
+RULE :CriticalRisk PROB(combination=minmax) :-
 CONSTRUCT {
     ?sensor ex:criticalRisk true .
 }
@@ -183,7 +183,7 @@ WHERE {
                 size_after_prob
             );
         }
-        Err(e) => eprintln!("  Probabilistic rule error: {}", e),
+        Err(e) => eprintln!("  Provenance rule error: {}", e),
     }
 
     println!("\n[Stage 7] SPARQL SELECT — sensors with critical risk...");
@@ -232,7 +232,7 @@ SELECT ?sensor WHERE {
         size_before_prob
     );
     println!(
-        "  After probabilistic RULE:          {:>2} triples  (+2 criticalRisk for S1, S3)",
+        "  After provenance RULE:             {:>2} triples  (+2 criticalRisk for S1, S3)",
         final_size
     );
     println!(
@@ -246,8 +246,8 @@ SELECT ?sensor WHERE {
     println!("    * RDF-star  << s p o >>    — Stage 2");
     println!("    * SPARQL-star              — Stages 3, 8");
     println!("    * RULE (classical)         — Stage 4");
-    println!("    * RULE PROB(combination=min, threshold, confidence)");
-    println!("                               — Stage 6  (uses Stage 4 output as premise)");
+    println!("    * RULE PROB(combination=minmax)");
+    println!("                               — Stage 6  (provenance-based, uses Stage 4 output as premise)");
 }
 
 /// Shorten a full URI for display: keeps only the local name after the last '/' or '#'.
