@@ -68,11 +68,82 @@ pub fn parse_uri(input: &str) -> IResult<&str, &str> {
     delimited(char('<'), take_while1(|c| c != '>'), char('>')).parse(input)
 }
 
+// Parser for a full URI including angle brackets (e.g., `<http://...>`)
+pub fn parse_full_uri(input: &str) -> IResult<&str, &str> {
+    recognize((char('<'), take_while1(|c: char| c != '>'), char('>'))).parse(input)
+}
+
+// Parser for a full literal including quotes and optional lang/datatype
+pub fn parse_full_literal(input: &str) -> IResult<&str, &str> {
+    recognize((
+        char('"'),
+        take_while1(|c: char| c != '"'),
+        char('"'),
+        opt(alt((
+            recognize((tag("^^"), parse_full_uri)),
+            recognize((char('@'), identifier)),
+        ))),
+    )).parse(input)
+}
+
+/// Parse a subject or object that can appear inside a quoted triple.
+/// Handles: quoted triples (recursive), full URIs, variables, full literals,
+/// prefixed names, and bare identifiers.
+pub fn parse_qt_subject_or_object(input: &str) -> IResult<&str, &str> {
+    alt((
+        parse_quoted_triple,
+        parse_full_uri,
+        variable,
+        parse_full_literal,
+        recognize((char(':'), identifier)),
+        prefixed_identifier,
+        identifier,
+    )).parse(input)
+}
+
+/// Parse a quoted triple: `<< subject predicate object >>`
+/// Returns the entire `<< ... >>` as a single string slice.
+pub fn parse_quoted_triple(input: &str) -> IResult<&str, &str> {
+    recognize((
+        tag("<<"),
+        multispace0,
+        parse_qt_subject_or_object,
+        multispace1,
+        alt((
+            parse_full_uri,
+            variable,
+            recognize((char(':'), identifier)),
+            prefixed_identifier,
+            tag("a"),
+        )),
+        multispace1,
+        parse_qt_subject_or_object,
+        multispace0,
+        tag(">>"),
+    )).parse(input)
+}
+
+/// Parse annotation syntax: `{| predicate object ; ... |}`
+/// Returns predicate-object pairs for the annotation.
+pub fn parse_annotation(input: &str) -> IResult<&str, Vec<(&str, &str)>> {
+    let (input, _) = (tag("{|"), multispace0).parse(input)?;
+    let (input, first) = parse_predicate_object(input)?;
+    let (input, rest) = many0(preceded(
+        (multispace0, char(';'), multispace0),
+        parse_predicate_object,
+    )).parse(input)?;
+    let (input, _) = (multispace0, tag("|}")).parse(input)?;
+    let mut pairs = vec![first];
+    pairs.extend(rest);
+    Ok((input, pairs))
+}
+
 // Helper parser to parse a single predicate-object pair.
 pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, p) = predicate(input)?;
     let (input, _) = multispace1.parse(input)?;
     let (input, o) = alt((
+        parse_quoted_triple,          // << s p o >> (RDF-star)
         parse_uri,                    // <http://...>
         variable,                     // ?variable
         parse_literal,                // "literal"
@@ -85,6 +156,7 @@ pub fn parse_predicate_object(input: &str) -> IResult<&str, (&str, &str)> {
 
 pub fn parse_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
     let (input, subject) = alt((
+        parse_quoted_triple,          // << s p o >> (RDF-star)
         parse_uri,                    // <http://...>
         variable,                     // ?variable
         recognize((char(':'), identifier)), // :localname
@@ -447,13 +519,43 @@ fn parse_not(input: &str) -> IResult<&str, FilterExpression<'_>> {
     Ok((input, FilterExpression::Not(Box::new(expr))))
 }
 
+// Parse a SPARQL-star function call: isTRIPLE(?x), SUBJECT(?t), PREDICATE(?t), OBJECT(?t), TRIPLE(?s, ?p, ?o)
+fn parse_function_call(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, func_name) = alt((
+        tag("isTRIPLE"),
+        tag("TRIPLE"),
+        tag("SUBJECT"),
+        tag("PREDICATE"),
+        tag("OBJECT"),
+    )).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, args) = separated_list1(
+        (multispace0, char(','), multispace0),
+        alt((variable, parse_literal)),
+    ).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+    Ok((input, FilterExpression::FunctionCall(func_name, args)))
+}
+
+fn parse_standalone_arith(input: &str) -> IResult<&str, FilterExpression<'_>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, expr) = parse_arithmetic_expression(input)?;
+    Ok((input, FilterExpression::ArithmeticExpr(Box::new(expr))))
+}
+
 // Parse a basic term (comparison, parenthesized expression, or negation)
 fn parse_term(input: &str) -> IResult<&str, FilterExpression<'_>> {
     alt((
+        parse_function_call,
         parse_comparison,
         parse_arithmetic_comparison,
         parse_parenthesized,
         parse_not,
+        parse_standalone_arith,
     )).parse(input)
 }
 
@@ -851,12 +953,36 @@ pub fn parse_insert(input: &str) -> IResult<&str, InsertClause<'_>> {
         separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
 
     let (input, _) = multispace0.parse(input)?;
+    // Allow optional trailing dot
+    let (input, _) = opt((char('.'), multispace0)).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
     let (input, _) = char('}').parse(input)?;
 
     // Flatten all the triple blocks into a single Vec
     let triples = triple_blocks.into_iter().flatten().collect();
 
     Ok((input, InsertClause { triples }))
+}
+
+// Parse DELETE { triple_patterns } clause
+pub fn parse_delete(input: &str) -> IResult<&str, DeleteClause<'_>> {
+    let (input, _) = tag("DELETE").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('{').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+
+    let (input, triple_blocks) =
+        separated_list1((space0, char('.'), space0), parse_triple_block).parse(input)?;
+
+    let (input, _) = multispace0.parse(input)?;
+    // Allow optional trailing dot
+    let (input, _) = opt((char('.'), multispace0)).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('}').parse(input)?;
+
+    let triples = triple_blocks.into_iter().flatten().collect();
+
+    Ok((input, DeleteClause { triples }))
 }
 
 pub fn parse_construct_clause(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
@@ -928,8 +1054,8 @@ pub fn parse_sparql_query(
     let (mut input, _) = multispace0.parse(input)?;
 
     let mut variables = Vec::new();
-    if insert_clause.is_none() {
-        // Parse SELECT clause only if there is no INSERT clause
+    if insert_clause.is_none() && !input.trim_start().starts_with("WHERE") {
+        // Parse SELECT clause only if there is no INSERT clause and input doesn't start with WHERE
         let (new_input, vars) = parse_select(input)?;
         variables = vars;
         input = new_input;
@@ -1033,26 +1159,13 @@ pub fn parse_rule_call(input: &str) -> IResult<&str, RuleHead<'_>> {
         input,
         RuleHead {
             predicate: pred,
-            arguments: all_vars,
         },
     ))
 }
 
 pub fn parse_rule_head(input: &str) -> IResult<&str, RuleHead<'_>> {
     let (input, pred) = predicate(input)?;
-    let (input, args) = opt(delimited(
-        char('('),
-        separated_list1((multispace0, char(','), multispace0), variable),
-        char(')'),
-    )).parse(input)?;
-    let arguments = args.unwrap_or_else(|| vec![]);
-    Ok((
-        input,
-        RuleHead {
-            predicate: pred,
-            arguments,
-        },
-    ))
+    Ok((input, RuleHead { predicate: pred }))
 }
 
 fn parse_balanced(input: &str) -> IResult<&str, &str> {
@@ -1399,13 +1512,56 @@ pub fn parse_from_named_window(input: &str) -> IResult<&str, WindowClause<'_>> {
     }))
 }
 
+/// Parse a PROB(...) annotation for provenance rules.
+/// Format: PROB(provenance=minmax, threshold=0.3, confidence=0.9)
+/// Legacy alias: PROB(combination=independent, threshold=0.3, confidence=0.9)
+fn parse_prob_annotation(input: &str) -> IResult<&str, ProbAnnotation<'_>> {
+    let (input, _) = tag("PROB").parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = char('(').parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+
+    let mut combination: &str = "independent";
+    let mut threshold: Option<f64> = None;
+    let mut confidence: Option<f64> = None;
+
+    // Parse key=value pairs separated by commas
+    let (input, kv_str) = take_until(")").parse(input)?;
+    let (input, _) = char(')').parse(input)?;
+
+    for pair in kv_str.split(',') {
+        let pair = pair.trim();
+        if let Some((key, value)) = pair.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "combination" | "provenance" => combination = value,
+                "threshold" => threshold = value.parse::<f64>().ok(),
+                "confidence" => confidence = value.parse::<f64>().ok(),
+                _ => {} // Ignore unknown keys
+            }
+        }
+    }
+
+    Ok((input, ProbAnnotation {
+        combination,
+        threshold,
+        confidence,
+    }))
+}
+
 /// Parse a complete rule:
 ///   RULE :OverheatingAlert(?room) :- WHERE { ... } => { ... } .
+///   RULE :Name PROB(combination=independent, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
+///   RULE :Name PROB(provenance=minmax, threshold=0.3) :- CONSTRUCT { ... } WHERE { ... } .
 pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = tag("RULE").parse(input)?;
     let (input, _) = space1.parse(input)?;
     let (input, head) = parse_rule_head(input)?;
     let (input, _) = multispace0.parse(input)?;
+
+    // Optionally parse PROB(...) annotation before :-
+    let (input, prob_annotation) = opt(terminated(parse_prob_annotation, multispace0)).parse(input)?;
 
     let (input, _) = tag(":-").parse(input)?;
     let (input, _) = multispace0.parse(input)?;
@@ -1462,6 +1618,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
             body,
             conclusion: conclusions,
             ml_predict,
+            prob_annotation,
         },
     ))
 }
@@ -1577,14 +1734,21 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
     let (input, rule_opt) = opt(parse_rule).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
     
+    // Optionally parse DELETE clause (before SPARQL query, per SPARQL Update spec)
+    let (input, delete_clause) = opt(parse_delete).parse(input)?;
+    let (input, _) = multispace0.parse(input)?;
+
     // Parse the SPARQL query part
-    let (input, sparql_parse) = if input.trim().is_empty() {
+    let (input, sparql_parse) = if input.trim().is_empty() && delete_clause.is_none() {
         // No remaining input - create empty SPARQL parse result
+        (input, (None, vec![], vec![], vec![], vec![], HashMap::new(), None, vec![], vec![], None, vec![], vec![]))
+    } else if delete_clause.is_some() && input.trim().is_empty() {
+        // DELETE with no WHERE clause — just the delete template
         (input, (None, vec![], vec![], vec![], vec![], HashMap::new(), None, vec![], vec![], None, vec![], vec![]))
     } else {
         // There's remaining input - try to parse it as SPARQL
         parse_sparql_query(input)?
-    }; 
+    };
 
     Ok((
         input,
@@ -1594,6 +1758,7 @@ pub fn parse_combined_query(input: &str) -> IResult<&str, CombinedQuery<'_>> {
             register_clause,
             rule: rule_opt,
             sparql: sparql_parse,
+            delete_clause,
         },
     ))
 }
@@ -1758,45 +1923,43 @@ pub fn convert_combined_rule<'a>(
         println!("Stream Type: {:?}", stream_type);
     }
 
-    // Special handling for parameterless rules with ML.PREDICT
+    // Handle ML.PREDICT: wire output variable into conclusion triples
     if let Some(ml_predict) = &cr.ml_predict {
-        if cr.head.arguments.is_empty() {
-            println!("Processing parameterless rule with ML.PREDICT");
-            
-            let ml_output_var = ml_predict.output.trim_start_matches('?');
-            println!("ML output variable: ?{}", ml_output_var);
-            
-            // Check if the conclusion triples contain the ML output variable
-            for (i, conclusion) in conclusion_triples.iter_mut().enumerate() {
-                println!("Checking conclusion pattern {}: {:?}", i, conclusion);
-                
-                // Check if the conclusion contains variables that need ML output
-                match &mut conclusion.2 {
-                    Term::Variable(var) if var == ml_output_var => {
-                        println!("Found ML output variable ?{} in conclusion object position", ml_output_var);
-                    },
-                    Term::Variable(var) if var == "level" => {
-                        // Replace generic 'level' variable with ML output variable
-                        *var = ml_output_var.to_string();
-                        println!("Replaced ?level with ML output variable ?{}", ml_output_var);
-                    },
-                    _ => {}
-                }
-                
-                // Also check subject and predicate positions
-                match &mut conclusion.0 {
-                    Term::Variable(var) if var == ml_output_var => {
-                        println!("Found ML output variable ?{} in conclusion subject position", ml_output_var);
-                    },
-                    _ => {}
-                }
-                
-                match &mut conclusion.1 {
-                    Term::Variable(var) if var == ml_output_var => {
-                        println!("Found ML output variable ?{} in conclusion predicate position", ml_output_var);
-                    },
-                    _ => {}
-                }
+        println!("Processing rule with ML.PREDICT");
+
+        let ml_output_var = ml_predict.output.trim_start_matches('?');
+        println!("ML output variable: ?{}", ml_output_var);
+
+        // Check if the conclusion triples contain the ML output variable
+        for (i, conclusion) in conclusion_triples.iter_mut().enumerate() {
+            println!("Checking conclusion pattern {}: {:?}", i, conclusion);
+
+            // Check if the conclusion contains variables that need ML output
+            match &mut conclusion.2 {
+                Term::Variable(var) if var == ml_output_var => {
+                    println!("Found ML output variable ?{} in conclusion object position", ml_output_var);
+                },
+                Term::Variable(var) if var == "level" => {
+                    // Replace generic 'level' variable with ML output variable
+                    *var = ml_output_var.to_string();
+                    println!("Replaced ?level with ML output variable ?{}", ml_output_var);
+                },
+                _ => {}
+            }
+
+            // Also check subject and predicate positions
+            match &mut conclusion.0 {
+                Term::Variable(var) if var == ml_output_var => {
+                    println!("Found ML output variable ?{} in conclusion subject position", ml_output_var);
+                },
+                _ => {}
+            }
+
+            match &mut conclusion.1 {
+                Term::Variable(var) if var == ml_output_var => {
+                    println!("Found ML output variable ?{} in conclusion predicate position", ml_output_var);
+                },
+                _ => {}
             }
         }
     }
@@ -1807,6 +1970,7 @@ pub fn convert_combined_rule<'a>(
         conclusion: conclusion_triples,
     }
 }
+
 
 pub fn process_rule_definition(
     rule_input: &str,
@@ -1927,21 +2091,106 @@ pub fn process_rule_definition(
             return Ok((dynamic_rule, all_stream_results));
         }
 
-        // Non-windowed rule processing (existing logic)
-        kg.add_rule(dynamic_rule.clone());
+        // Non-windowed rule processing
+        // Check if this is a provenance-annotated rule
+        if rule.prob_annotation.is_some() {
+            let ann = rule.prob_annotation.as_ref().unwrap();
 
-        // Register rule predicates
-        register_rule_predicates(&dynamic_rule, database);
+            kg.add_rule(dynamic_rule.clone());
+            register_rule_predicates(&dynamic_rule, database);
 
-        // Infer new facts based on the rule
-        let inferred_facts = kg.infer_new_facts_semi_naive();
+            // Choose provenance based on annotation, then materialize tags as RDF-star
+            let provenance_type = ann.combination;
+            let inferred_facts = match provenance_type {
+                "minmax" | "min" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                "addmult" | "independent" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::AddMultProbability);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                "boolean" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::BooleanProvenance);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                // Top-K proof-tracking provenance.
+                // k is read from the threshold field (default 5).
+                // Syntax: PROB(combination=topk) or PROB(combination=topk, threshold=10)
+                "topk" => {
+                    let k = ann.threshold.map(|t| t as usize).unwrap_or(5);
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(
+                        shared::provenance::TopKProofs::new(k)
+                    );
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                _ => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(shared::provenance::MinMaxProbability);
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+            };
 
-        // Add inferred facts to the database
-        for triple in inferred_facts.iter() {
-            database.triples.insert(triple.clone());
+            for triple in inferred_facts.iter() {
+                database.triples.insert(triple.clone());
+            }
+
+            Ok((dynamic_rule, inferred_facts))
+        } else {
+            kg.add_rule(dynamic_rule.clone());
+
+            // Register rule predicates
+            register_rule_predicates(&dynamic_rule, database);
+
+            // Infer new facts based on the rule
+            let inferred_facts = kg.infer_new_facts_semi_naive();
+
+            // Add inferred facts to the database
+            for triple in inferred_facts.iter() {
+                database.triples.insert(triple.clone());
+            }
+
+            Ok((dynamic_rule, inferred_facts))
         }
-
-        Ok((dynamic_rule, inferred_facts))
     } else {
         Err("Failed to parse rule definition".to_string())
     }
@@ -2000,19 +2249,19 @@ pub fn process_retrieve_clause(
 fn matches_pattern(pattern: &TriplePattern, triple: &Triple) -> bool {
     // Check subject match
     let subject_match = match &pattern.0 {
-        Term::Variable(_) => true, // Variables match anything
+        Term::Variable(_) | Term::QuotedTriple(_) => true,
         Term::Constant(code) => *code == triple.subject,
     };
-    
+
     // Check predicate match
     let predicate_match = match &pattern.1 {
-        Term::Variable(_) => true,
+        Term::Variable(_) | Term::QuotedTriple(_) => true,
         Term::Constant(code) => *code == triple.predicate,
     };
-    
+
     // Check object match
     let object_match = match &pattern.2 {
-        Term::Variable(_) => true,
+        Term::Variable(_) | Term::QuotedTriple(_) => true,
         Term::Constant(code) => *code == triple.object,
     };
     
@@ -2077,4 +2326,3 @@ fn register_rule_predicates(rule: &Rule, database: &mut SparqlDatabase) {
         }
     }
 }
-

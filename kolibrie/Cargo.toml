@@ -269,6 +269,10 @@ name = "full_combination"
 path = "examples/sparql_syntax/combination/full_combination.rs"
 
 [[example]]
+name = "combined_syntax_example"
+path = "examples/sparql_syntax/combination/combined_syntax_example.rs"
+
+[[example]]
 name = "retrieve_rsp"
 path = "examples/sparql_syntax/rsp_ql_syntax/retrieve.rs"
 
@@ -291,3 +295,7 @@ path = "examples/real_scenario/mqtt_real_scenario.rs"
 [[example]]
 name = "fraud_detection_system"
 path = "examples/real_scenario/fraud_detection_system.rs"
+
+[[example]]
+name = "combined_rules_example"
+path = "examples/sparql_syntax/knowledge_graph/combined_rules_example.rs"

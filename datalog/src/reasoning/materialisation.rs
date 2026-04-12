@@ -8,6 +8,8 @@ pub mod semi_naive;
 pub mod my_naive;
 pub mod semi_naive_parallel;
 pub mod semi_naive_with_repairs;
+pub mod provenance_infer_generic;
+pub mod provenance_semi_naive;
 
 ///
 fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {
@@ -22,6 +24,7 @@ fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {
             0
         }),
         Term::Constant(c) => *c,
+        Term::QuotedTriple(_) => 0,
     }
 }
 
@@ -41,12 +44,13 @@ pub fn replace_variables_with_bound_values(
             if let Some(&bound_value) = vars.get(v) {
                 bound_value
             } else {
-                
+
                 // If not bound, create a new placeholder in the dictionary
                 dict.encode(&format!("ml_output_placeholder_{}", v))
             }
         }
         Term::Constant(c) => *c,
+        Term::QuotedTriple(_) => 0,
     };
 
     Triple {

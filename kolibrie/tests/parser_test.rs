@@ -164,23 +164,22 @@ mod tests {
     
     #[test]
     fn test_rule_parsing() {
-        let input = r#"RULE :OverheatingAlert(?room) :- 
-        CONSTRUCT { 
+        let input = r#"RULE :OverheatingAlert :-
+        CONSTRUCT {
             ?room ex:overheatingAlert true .
         }
-        WHERE { 
-            ?reading ex:room ?room ; 
+        WHERE {
+            ?reading ex:room ?room ;
                     ex:temperature ?temp
             FILTER (?temp > 80)
         }"#;
-        
+
         let result = parse_rule(input);
-        
+
         assert!(result.is_ok());
-        
+
         let (_, rule) = result.unwrap();
         assert_eq!(rule.head.predicate, ":OverheatingAlert");
-        assert_eq!(rule.head.arguments.len(), 1);
         assert_eq!(rule.conclusion.len(), 1);
     }
     
@@ -232,27 +231,25 @@ WHERE {
     
     #[test]
     fn test_rule_with_a_syntax_in_where() {
-        let input = r#"RULE :OverheatingAlert(?room) :- 
-CONSTRUCT { 
+        let input = r#"RULE :OverheatingAlert :-
+CONSTRUCT {
     ?room ex:overheatingAlert true .
 }
-WHERE { 
+WHERE {
     ?reading a ex:Sensor ;
-             ex:room ?room ; 
+             ex:room ?room ;
              ex:temperature ?temp
     FILTER (?temp > 80)
 }"#;
-        
+
         let result = parse_rule(input);
-        
+
         assert!(result.is_ok());
-        
+
         let (_, rule) = result.unwrap();
-        
+
         // Check rule head
         assert_eq!(rule.head.predicate, ":OverheatingAlert");
-        assert_eq!(rule.head.arguments.len(), 1);
-        assert_eq!(rule.head.arguments[0], "?room");
         
         // Check conclusion
         assert_eq!(rule.conclusion.len(), 1);
@@ -294,6 +291,116 @@ WHERE {
     }
 
     #[test]
+    fn test_rule_with_prob_annotation() {
+        let input = r#"RULE :TransitiveRelated PROB(combination=independent, threshold=0.3, confidence=0.9) :-
+CONSTRUCT {
+    ?x ex:related ?z .
+}
+WHERE {
+    ?x ex:related ?y .
+    ?y ex:related ?z .
+}"#;
+
+        let result = parse_rule(input);
+        assert!(result.is_ok(), "Failed to parse RULE with PROB annotation: {:?}", result.err());
+
+        let (_, rule) = result.unwrap();
+
+        // Check rule head
+        assert_eq!(rule.head.predicate, ":TransitiveRelated");
+
+        // Check PROB annotation is present and correct
+        let prob = rule.prob_annotation.as_ref().expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "independent");
+        assert!((prob.threshold.unwrap() - 0.3).abs() < 1e-9);
+        assert!((prob.confidence.unwrap() - 0.9).abs() < 1e-9);
+
+        // Check conclusion
+        assert_eq!(rule.conclusion.len(), 1);
+        assert_eq!(rule.conclusion[0], ("?x", "ex:related", "?z"));
+
+        // Check body patterns
+        let (patterns, filters, _, _, _) = &rule.body;
+        assert_eq!(patterns.len(), 2);
+        assert_eq!(patterns[0], ("?x", "ex:related", "?y"));
+        assert_eq!(patterns[1], ("?y", "ex:related", "?z"));
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn test_rule_with_prob_annotation_min_combination() {
+        let input = r#"RULE :InferType PROB(combination=min, threshold=0.5) :-
+CONSTRUCT {
+    ?x a ex:HighRisk .
+}
+WHERE {
+    ?x ex:score ?s .
+    FILTER (?s > 80)
+}"#;
+
+        let result = parse_rule(input);
+        assert!(result.is_ok(), "Failed to parse RULE with min PROB: {:?}", result.err());
+
+        let (_, rule) = result.unwrap();
+
+        let prob = rule.prob_annotation.as_ref().expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "min");
+        assert!((prob.threshold.unwrap() - 0.5).abs() < 1e-9);
+        assert!(prob.confidence.is_none(), "confidence should be None when not specified");
+
+        // Check filter is parsed
+        let (_, filters, _, _, _) = &rule.body;
+        assert_eq!(filters.len(), 1);
+    }
+
+    #[test]
+    fn test_rule_with_prob_annotation_provenance_alias() {
+        let input = r#"RULE :CriticalRisk PROB(provenance=minmax, threshold=0.5) :-
+CONSTRUCT {
+    ?x ex:risk true .
+}
+WHERE {
+    ?x ex:score ?s .
+    FILTER (?s > 80)
+}"#;
+
+        let result = parse_rule(input);
+        assert!(
+            result.is_ok(),
+            "Failed to parse RULE with provenance PROB alias: {:?}",
+            result.err()
+        );
+
+        let (_, rule) = result.unwrap();
+        let prob = rule
+            .prob_annotation
+            .as_ref()
+            .expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "minmax");
+        assert!((prob.threshold.unwrap() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_rule_without_prob_annotation_still_works() {
+        // Regression: rules without PROB should parse identically to before
+        let input = r#"RULE :SimpleRule :-
+CONSTRUCT {
+    ?x ex:inferred true .
+}
+WHERE {
+    ?x ex:fact ?y .
+}"#;
+
+        let result = parse_rule(input);
+        assert!(result.is_ok());
+
+        let (_, rule) = result.unwrap();
+        assert!(rule.prob_annotation.is_none(), "PROB annotation should be None for classical rules");
+        assert_eq!(rule.head.predicate, ":SimpleRule");
+        assert_eq!(rule.conclusion.len(), 1);
+    }
+
+    #[test]
     fn test_select_all_with_prefix() {
         let input = r#"PREFIX ex: <http://example.org#>
 SELECT *
@@ -321,4 +428,26 @@ WHERE {
         assert_eq!(patterns[0].1, "?p");
         assert_eq!(patterns[0].2, "?o");
     }
+
+    #[test]
+    fn test_rule_with_prob_annotation_topk() {
+        let input = r#"RULE :TopKRule PROB(combination=topk, threshold=5) :-
+CONSTRUCT {
+    ?x ex:related ?z .
+}
+WHERE {
+    ?x ex:related ?y .
+    ?y ex:related ?z .
+}"#;
+
+        let result = parse_rule(input);
+        assert!(result.is_ok(), "Failed to parse RULE with topk PROB: {:?}", result.err());
+
+        let (_, rule) = result.unwrap();
+        let prob = rule.prob_annotation.as_ref().expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "topk");
+        assert!((prob.threshold.unwrap() - 5.0).abs() < 1e-9);
+        assert!(prob.confidence.is_none());
+    }
+
 }

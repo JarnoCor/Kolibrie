@@ -17,7 +17,8 @@ pub enum FilterExpression<'a> {
     And(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
     Or(Box<FilterExpression<'a>>, Box<FilterExpression<'a>>),
     Not(Box<FilterExpression<'a>>),
-    ArithmeticExpr(&'a str),
+    ArithmeticExpr(Box<ArithmeticExpression<'a>>),
+    FunctionCall(&'a str, Vec<&'a str>),
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +28,32 @@ pub enum ArithmeticExpression<'a> {
     Subtract(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
     Multiply(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
     Divide(Box<ArithmeticExpression<'a>>, Box<ArithmeticExpression<'a>>),
+}
+
+impl<'a> ArithmeticExpression<'a> {
+    /// Evaluate the expression. `resolve` maps variable strings (e.g. `?x`) to f64 values.
+    pub fn evaluate<F: Fn(&str) -> Option<f64>>(&self, resolve: &F) -> Result<f64, String> {
+        match self {
+            Self::Operand(s) => {
+                if s.starts_with('?') {
+                    resolve(s).ok_or_else(|| format!("Variable '{}' not found or not numeric", s))
+                } else {
+                    s.parse::<f64>().map_err(|_| format!("Cannot parse '{}' as number", s))
+                }
+            }
+            Self::Add(l, r) => Ok(l.evaluate(resolve)? + r.evaluate(resolve)?),
+            Self::Subtract(l, r) => Ok(l.evaluate(resolve)? - r.evaluate(resolve)?),
+            Self::Multiply(l, r) => Ok(l.evaluate(resolve)? * r.evaluate(resolve)?),
+            Self::Divide(l, r) => {
+                let rv = r.evaluate(resolve)?;
+                if rv == 0.0 {
+                    Err("Division by zero".to_string())
+                } else {
+                    Ok(l.evaluate(resolve)? / rv)
+                }
+            }
+        }
+    }
 }
 
 // Define the Value enum to represent terms or UNDEF in VALUES clause
@@ -49,6 +76,12 @@ pub struct InsertClause<'a> {
     pub triples: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+// Define the DeleteClause struct to hold triple patterns for the DELETE clause
+#[derive(Debug, Clone)]
+pub struct DeleteClause<'a> {
+    pub triples: Vec<(&'a str, &'a str, &'a str)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SubQuery<'a> {
     pub variables: Vec<(&'a str, &'a str, Option<&'a str>)>, // SELECT variables
@@ -62,7 +95,6 @@ pub struct SubQuery<'a> {
 #[derive(Debug, Clone)]
 pub struct RuleHead<'a> {
     pub predicate: &'a str,
-    pub arguments: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +190,15 @@ pub struct WindowBlock<'a> {
     pub patterns: Vec<(&'a str, &'a str, &'a str)>,
 }
 
+/// Probability annotation for a RULE.
+/// Parsed from: PROB(combination=independent, threshold=0.3, confidence=0.9)
+#[derive(Clone, Debug)]
+pub struct ProbAnnotation<'a> {
+    pub combination: &'a str,
+    pub threshold: Option<f64>,
+    pub confidence: Option<f64>,
+}
+
 // Modified CombinedRule to include windowing
 #[derive(Clone, Debug)]
 pub struct CombinedRule<'a> {
@@ -173,6 +214,7 @@ pub struct CombinedRule<'a> {
     ),
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
+    pub prob_annotation: Option<ProbAnnotation<'a>>, // probabilistic rule annotation
 }
 
 // Add these new enums and structs
@@ -229,4 +271,5 @@ pub struct CombinedQuery<'a> {
         Vec<WindowBlock<'a>>,
         Vec<OrderCondition<'a>>,
     ),
+    pub delete_clause: Option<DeleteClause<'a>>,
 }

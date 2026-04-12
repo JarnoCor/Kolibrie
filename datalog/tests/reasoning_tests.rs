@@ -652,3 +652,360 @@ fn bc_no_spurious_negative() {
 
     assert!(results.is_empty(), "BC should return nothing for unknown predicate");
 }
+
+// =====================================================================
+// Provenance semiring reasoning tests
+// =====================================================================
+
+use shared::provenance::{AddMultProbability, MinMaxProbability, BooleanProvenance, Provenance};
+
+#[test]
+fn prov_transitive_addmult_combination() {
+    // A related B (0.8), B related C (0.7)
+    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
+    // AddMultProbability: ⊗ = multiply, so 0.8 * 0.7 = 0.56
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "related", "B", 0.8);
+    r.add_tagged_triple("B", "related", "C", 0.7);
+
+    let related = enc(&r, "related");
+
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+    ));
+
+    let (inferred, tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    assert!(a_related_c, "Should infer A related C");
+
+    let triple = shared::triple::Triple { subject: a, predicate: related, object: c };
+    let prob = AddMultProbability.recover_probability(&tag_store.get_tag(&triple));
+    assert!((prob - 0.56).abs() < 1e-6, "Probability should be ~0.56, got {}", prob);
+}
+
+#[test]
+fn prov_addmult_multiple_paths() {
+    // A related B (0.6), A related C (0.9), B related D (0.8), C related D (0.5)
+    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
+    // Path 1: A->B->D = 0.6*0.8 = 0.48
+    // Path 2: A->C->D = 0.9*0.5 = 0.45
+    // AddMultProbability ⊕ = noisy-OR: 0.48 + 0.45 - 0.48*0.45 ≈ 0.714
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "related", "B", 0.6);
+    r.add_tagged_triple("A", "related", "C", 0.9);
+    r.add_tagged_triple("B", "related", "D", 0.8);
+    r.add_tagged_triple("C", "related", "D", 0.5);
+
+    let related = enc(&r, "related");
+
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+    ));
+
+    let (_inferred, tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
+
+    let a = enc(&r, "A");
+    let d = enc(&r, "D");
+    let triple = shared::triple::Triple { subject: a, predicate: related, object: d };
+    let prob = AddMultProbability.recover_probability(&tag_store.get_tag(&triple));
+    // noisy-OR: 0.48 + 0.45 - 0.48*0.45 = 0.93 - 0.216 = 0.714
+    assert!((prob - 0.714).abs() < 1e-6, "AddMult disjunction should be ~0.714, got {}", prob);
+}
+
+#[test]
+fn prov_minmax_conjunction() {
+    // A knows B (0.9), B trusts C (0.6)
+    // MinMaxProbability: ⊗ = min, so min(0.9, 0.6) = 0.6
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "knows", "B", 0.9);
+    r.add_tagged_triple("B", "trusts", "C", 0.6);
+
+    let knows = enc(&r, "knows");
+    let trusts = enc(&r, "trusts");
+    let recommends = enc(&r, "recommends");
+
+    r.add_rule(Rule {
+        premise: vec![
+            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(trusts), Term::Variable("Z".into())),
+        ],
+        filters: vec![],
+        conclusion: vec![
+            (Term::Variable("X".into()), Term::Constant(recommends), Term::Variable("Z".into())),
+        ],
+    });
+
+    let (_inferred, tag_store) = r.infer_new_facts_with_provenance(MinMaxProbability);
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let triple = shared::triple::Triple { subject: a, predicate: recommends, object: c };
+    let prob = MinMaxProbability.recover_probability(&tag_store.get_tag(&triple));
+    assert!((prob - 0.6).abs() < 1e-6, "MinMax conjunction should be 0.6, got {}", prob);
+}
+
+#[test]
+fn prov_minmax_multiple_paths() {
+    // A related B (0.6), A related C (0.9), B related D (0.8), C related D (0.5)
+    // MinMaxProbability: ⊗ = min, ⊕ = max
+    // Path 1: A->B->D = min(0.6, 0.8) = 0.6
+    // Path 2: A->C->D = min(0.9, 0.5) = 0.5
+    // Disjunction: max(0.6, 0.5) = 0.6
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "related", "B", 0.6);
+    r.add_tagged_triple("A", "related", "C", 0.9);
+    r.add_tagged_triple("B", "related", "D", 0.8);
+    r.add_tagged_triple("C", "related", "D", 0.5);
+
+    let related = enc(&r, "related");
+
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+    ));
+
+    let (_inferred, tag_store) = r.infer_new_facts_with_provenance(MinMaxProbability);
+
+    let a = enc(&r, "A");
+    let d = enc(&r, "D");
+    let triple = shared::triple::Triple { subject: a, predicate: related, object: d };
+    let prob = MinMaxProbability.recover_probability(&tag_store.get_tag(&triple));
+    assert!((prob - 0.6).abs() < 1e-6, "MinMax disjunction should be 0.6, got {}", prob);
+}
+
+#[test]
+fn prov_boolean_matches_classical() {
+    // BooleanProvenance should produce the same facts as classical semi-naive
+    let mut r = Reasoner::new();
+    r.add_abox_triple("A", "parent", "B");
+    r.add_abox_triple("B", "parent", "C");
+
+    let parent = enc(&r, "parent");
+    let ancestor = enc(&r, "ancestor");
+
+    r.add_rule(rule(
+        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
+        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+    ));
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(parent), Term::Variable("Z".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Z".into())),
+        ],
+    ));
+
+    let (inferred, tag_store) = r.infer_new_facts_with_provenance(BooleanProvenance);
+
+    // Should infer A ancestor B, B ancestor C, A ancestor C
+    let a = enc(&r, "A");
+    let b = enc(&r, "B");
+    let c = enc(&r, "C");
+    assert!(inferred.iter().any(|t| t.subject == a && t.predicate == ancestor && t.object == b));
+    assert!(inferred.iter().any(|t| t.subject == b && t.predicate == ancestor && t.object == c));
+    assert!(inferred.iter().any(|t| t.subject == a && t.predicate == ancestor && t.object == c));
+
+    // All tags should be true (one())
+    for t in &inferred {
+        assert_eq!(tag_store.get_tag(t), true);
+    }
+}
+
+#[test]
+fn prov_classical_rules_still_work() {
+    // Regression test: classical (non-provenance) rules should still work
+    let mut r = Reasoner::new();
+    r.add_abox_triple("A", "parent", "B");
+
+    let parent = enc(&r, "parent");
+    let ancestor = enc(&r, "ancestor");
+
+    r.add_rule(rule(
+        vec![(Term::Variable("X".into()), Term::Constant(parent), Term::Variable("Y".into()))],
+        vec![(Term::Variable("X".into()), Term::Constant(ancestor), Term::Variable("Y".into()))],
+    ));
+
+    r.infer_new_facts_semi_naive();
+    assert!(inferred(&mut r, "A", "ancestor", "B"));
+}
+
+#[test]
+fn prov_zero_tag_pruning() {
+    // If a fact has probability 0.0, its tag is zero() and derivations through it
+    // should be pruned (zero is annihilator for ⊗)
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "related", "B", 0.0); // zero tag
+    r.add_tagged_triple("B", "related", "C", 0.9);
+
+    let related = enc(&r, "related");
+
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+    ));
+
+    let (inferred, _tag_store) = r.infer_new_facts_with_provenance(AddMultProbability);
+
+    // A related C should NOT be inferred (zero ⊗ anything = zero, pruned)
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    assert!(!a_related_c, "Should NOT infer A related C through zero-tagged premise");
+}
+
+// =====================================================================
+// TopKProofs integration tests
+// =====================================================================
+
+use shared::provenance::TopKProofs;
+
+#[test]
+fn topk_wmc_overlap_vs_noisy_or() {
+    // Canonical overlap test: directly build the tag and verify WMC.
+    // proof1 = {0, 1}: uses x (0.8) and y (0.6) → score 0.48
+    // proof2 = {0, 2}: uses x (0.8) and z (0.5) → score 0.40 (shares x!)
+    //
+    // Noisy-OR of 0.48 and 0.40 = 0.688 (overcounts x)
+    // Exact WMC via inclusion-exclusion:
+    //   P(x∧y) + P(x∧z) - P(x∧y∧z) = 0.48 + 0.40 - 0.24 = 0.64
+    let p = TopKProofs::new(5);
+    p.tag_from_probability_with_id(0.8, 0); // x
+    p.tag_from_probability_with_id(0.6, 1); // y
+    p.tag_from_probability_with_id(0.5, 2); // z
+
+    let mut proof1: std::collections::BTreeSet<u32> = Default::default();
+    proof1.insert(0); proof1.insert(1);
+    let mut proof2: std::collections::BTreeSet<u32> = Default::default();
+    proof2.insert(0); proof2.insert(2);
+
+    let tag = vec![proof1, proof2];
+    let wmc = p.recover_probability(&tag);
+    assert!(
+        (wmc - 0.64).abs() < 1e-9,
+        "WMC with overlap should be 0.64 (not noisy-OR 0.688), got {}",
+        wmc
+    );
+}
+
+#[test]
+fn topk_transitive_chain() {
+    // A related B (0.9), B related C (0.8)
+    // Rule: ?X related ?Y, ?Y related ?Z => ?X related ?Z
+    // TopKProofs ⊗ = Cartesian product of proof sets
+    // tag(A→B) = [{0}], tag(B→C) = [{1}]
+    // conjunction: [{0}] ⊗ [{1}] = [{0,1}]
+    // WMC of [{0,1}] = P(A→B) * P(B→C) = 0.9 * 0.8 = 0.72
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "related", "B", 0.9);
+    r.add_tagged_triple("B", "related", "C", 0.8);
+
+    let related = enc(&r, "related");
+
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Y".into())),
+            (Term::Variable("Y".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(related), Term::Variable("Z".into())),
+        ],
+    ));
+
+    let (inferred, tag_store) = r.infer_new_facts_with_provenance(TopKProofs::new(3));
+
+    let a = enc(&r, "A");
+    let c = enc(&r, "C");
+    let a_related_c = inferred.iter().any(|t| t.subject == a && t.predicate == related && t.object == c);
+    assert!(a_related_c, "Should infer A related C");
+
+    let triple = shared::triple::Triple { subject: a, predicate: related, object: c };
+    let prob = tag_store.provenance().recover_probability(&tag_store.get_tag(&triple));
+    // Both seeds are distinct variables, so WMC = 0.9 * 0.8 = 0.72
+    assert!((prob - 0.72).abs() < 1e-6, "TopK chain probability should be 0.72, got {}", prob);
+}
+
+#[test]
+fn topk_overlap_two_paths_share_base_fact() {
+    // TopKProofs as the overlap-aware replacement for noisy-OR.
+    //
+    // Two rule firings produce the same conclusion triple but share a base fact (seed x).
+    // Noisy-OR (AddMultProbability) would treat the paths as independent and overcount x,
+    // giving 0.688. TopKProofs tracks proof sets and applies exact WMC via
+    // inclusion-exclusion, giving the correct 0.64.
+    //
+    // Facts:
+    //   A is_active yes  (seed x, prob 0.8)  ← appears in both proofs
+    //   A knows B        (seed y, prob 0.6)
+    //   A knows C        (seed z, prob 0.5)
+    //
+    // Rule: ?X is_active ?_, ?X knows ?Y => ?X is_socially_active yes
+    //
+    // Firing 1: X=A, Y=B → proof {x, y} = seeds {0, 1}, score 0.8 * 0.6 = 0.48
+    // Firing 2: X=A, Y=C → proof {x, z} = seeds {0, 2}, score 0.8 * 0.5 = 0.40
+    //
+    // Exact WMC: P(x∧y) + P(x∧z) − P(x∧y∧z) = 0.48 + 0.40 − 0.24 = 0.64
+    let mut r = Reasoner::new();
+    r.add_tagged_triple("A", "is_active", "yes", 0.8);
+    r.add_tagged_triple("A", "knows", "B", 0.6);
+    r.add_tagged_triple("A", "knows", "C", 0.5);
+
+    let is_active = enc(&r, "is_active");
+    let knows = enc(&r, "knows");
+    let is_socially_active = enc(&r, "is_socially_active");
+    let yes = enc(&r, "yes");
+
+    r.add_rule(rule(
+        vec![
+            (Term::Variable("X".into()), Term::Constant(is_active), Term::Variable("S".into())),
+            (Term::Variable("X".into()), Term::Constant(knows), Term::Variable("Y".into())),
+        ],
+        vec![
+            (Term::Variable("X".into()), Term::Constant(is_socially_active), Term::Constant(yes)),
+        ],
+    ));
+
+    let (inferred, tag_store) = r.infer_new_facts_with_provenance(TopKProofs::new(5));
+
+    let a = enc(&r, "A");
+    assert!(
+        inferred.iter().any(|t| t.subject == a && t.predicate == is_socially_active && t.object == yes),
+        "Should infer A is_socially_active yes"
+    );
+
+    let triple = shared::triple::Triple { subject: a, predicate: is_socially_active, object: yes };
+    let prob = tag_store.provenance().recover_probability(&tag_store.get_tag(&triple));
+
+    assert!(
+        (prob - 0.64).abs() < 1e-6,
+        "TopKProofs exact WMC should be 0.64 (noisy-OR would give 0.688), got {}",
+        prob
+    );
+}
+
