@@ -7,8 +7,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
-use serde::{Serialize, Deserialize};
 use crate::terms::{Term, TriplePattern};
+use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Triple {
@@ -30,8 +30,46 @@ impl Triple {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Hash)]
 pub struct TimestampedTriple {
     pub triple: Triple,
     pub timestamp: u64,
+}
+
+impl Ord for TimestampedTriple {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp
+            .cmp(&other.timestamp)
+            .then_with(|| self.triple.cmp(&other.triple))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordering_test_1() {
+        let triple_1 = TimestampedTriple {
+            triple: Triple {
+                subject: 1,
+                object: 2,
+                predicate: 3,
+            },
+            timestamp: 1,
+        };
+
+        let triple_2 = TimestampedTriple {
+            triple: Triple {
+                subject: 1,
+                object: 2,
+                predicate: 3,
+            },
+            timestamp: 2,
+        };
+
+        assert!(triple_1 < triple_2);
+        assert!(!(triple_1 == triple_2));
+        assert!(!(triple_1 > triple_2));
+    }
 }
