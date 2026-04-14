@@ -40,7 +40,7 @@ impl QuotedTripleStore {
         }
     }
 
-    /// Encode a quoted triple (s, p, o) → returns a quoted triple ID.
+    /// Encode a quoted triple (s, p, o) -> returns a quoted triple ID.
     /// Reuses an existing ID if this triple was already encoded.
     pub fn encode(&mut self, subject: u32, predicate: u32, object: u32) -> u32 {
         let key = (subject, predicate, object);

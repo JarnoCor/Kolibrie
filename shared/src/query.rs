@@ -212,6 +212,8 @@ pub struct CombinedRule<'a> {
         Vec<(&'a str, Vec<&'a str>, &'a str)>, // BIND clauses
         Vec<SubQuery<'a>>,                     // subqueries
     ),
+    /// Negated body atoms parsed from `NOT triple_pattern` clauses in WHERE.
+    pub negated_body: Vec<(&'a str, &'a str, &'a str)>,
     pub conclusion: Vec<(&'a str, &'a str, &'a str)>,
     pub ml_predict: Option<MLPredictClause<'a>>, // new field for ML.PREDICT clause
     pub prob_annotation: Option<ProbAnnotation<'a>>, // probabilistic rule annotation

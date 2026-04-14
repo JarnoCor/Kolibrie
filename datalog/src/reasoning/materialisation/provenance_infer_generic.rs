@@ -8,13 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Generic fixpoint driver for provenance-based materialisation.
-//!
-//! Analogous to [`probabilistic_infer_generic`] but parameterized by a
-//! [`Provenance`] semiring. The provenance determines how tags are combined
-//! (conjunction for joins, disjunction for alternative paths) and when
-//! the fixpoint has converged.
-
 use shared::dictionary::Dictionary;
 use shared::provenance::Provenance;
 use shared::rule::Rule;
@@ -47,17 +40,27 @@ pub trait ProvenanceInferenceStrategy<P: Provenance> {
 }
 
 impl Reasoner {
-    /// Generic driver for provenance-based materialisation.
-    ///
-    /// Loops until no new facts are derived AND no tags changed
-    /// (fixpoint with monotone convergence guaranteed by semiring properties).
-    ///
-    /// The provenance is applied uniformly to the entire program — conjunction
-    /// for premise joining, disjunction for alternative derivation paths.
+    /// Generic driver for provenance-based materialisation. Loops until fixpoint.
     pub fn infer_with_provenance_strategy<P, S>(
+        &mut self,
+        strat: S,
+        tag_store: &mut TagStore<P>,
+    ) -> Vec<Triple>
+    where
+        P: Provenance,
+        S: ProvenanceInferenceStrategy<P>,
+    {
+        let rules: Vec<Rule> = self.rules.clone();
+        self.infer_with_provenance_strategy_and_rules(strat, tag_store, &rules)
+    }
+
+    /// Same as `infer_with_provenance_strategy` but with an explicit rule slice.
+    /// Used for stratified evaluation where stratum-0 uses only positive rules.
+    pub fn infer_with_provenance_strategy_and_rules<P, S>(
         &mut self,
         mut strat: S,
         tag_store: &mut TagStore<P>,
+        rules: &[Rule],
     ) -> Vec<Triple>
     where
         P: Provenance,
@@ -71,7 +74,7 @@ impl Reasoner {
             let mut dict = self.dictionary.write().unwrap();
             let result = strat.infer_round(
                 &mut dict,
-                &self.rules,
+                rules,
                 &all_facts,
                 &known_facts,
                 tag_store,

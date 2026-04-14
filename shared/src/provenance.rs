@@ -8,33 +8,13 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Provenance semiring framework for probabilistic reasoning.
-//!
-//! Based on the theory of provenance semirings (Green et al., PODS 2007) and
-//! extended provenance structures (Scallop, Li et al., 2023).
-//!
-//! In a provenance semiring, each derived fact is annotated with a *tag* from
-//! a semiring (T, ⊕, ⊗, 0, 1). Union of derivation paths uses ⊕ (disjunction),
-//! and joining premises uses ⊗ (conjunction). The provenance is applied
-//! *uniformly* to the entire program — not per-rule.
-
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 /// Trait defining a provenance semiring for annotated datalog evaluation.
 ///
-/// Implementors provide:
-/// - A tag space (`Tag`) with identity elements (`zero`, `one`)
-/// - Semiring operations: `disjunction` (⊕) and `conjunction` (⊗)
-/// - Negation support (`negate`, ⊖) for stratified negation
-/// - Saturation (`saturate`, ⊜) for fixpoint convergence detection
-/// - Conversion to/from probability values for I/O
-///
-/// # Semiring Laws (expected to hold)
-/// - ⊕ is commutative, associative, with identity `zero`
-/// - ⊗ is commutative, associative, with identity `one`
-/// - ⊗ distributes over ⊕
-/// - `zero` is an annihilator for ⊗: `a ⊗ zero = zero`
+/// Implementors provide a tag space with identity elements, semiring operations
+/// (disjunction ⊕, conjunction ⊗), negation, saturation, and probability I/O.
 pub trait Provenance: Clone + 'static {
     /// The type of annotations (tags) on derived facts.
     type Tag: Clone + PartialEq + std::fmt::Debug;
@@ -78,21 +58,13 @@ pub trait Provenance: Clone + 'static {
     fn is_saturated(&self, old: &Self::Tag, new: &Self::Tag) -> bool;
 }
 
-// ---------------------------------------------------------------------------
-// Concrete provenance implementations
-// ---------------------------------------------------------------------------
-
 /// Epsilon for floating-point convergence comparisons.
 const PROB_EPSILON: f64 = 1e-9;
 
 /// Min-max probability provenance.
 ///
-/// - Tag: f64 probability in [0, 1]
-/// - ⊕ = max (optimistic disjunction)
-/// - ⊗ = min (conservative conjunction)
-///
-/// This is the simplest monotone provenance and corresponds to the
-/// possibilistic / fuzzy semantics commonly used in fuzzy Datalog.
+/// - Tag: f64 in [0, 1]; ⊕ = max, ⊗ = min
+/// - Possibilistic semantics (fuzzy Datalog).
 #[derive(Debug, Clone)]
 pub struct MinMaxProbability;
 
@@ -133,14 +105,8 @@ impl Provenance for MinMaxProbability {
 
 /// Add-multiply probability provenance.
 ///
-/// - Tag: f64 probability in [0, 1]
-/// - ⊕ = noisy-OR (inclusion-exclusion): P(A∨B) = P(A) + P(B) - P(A)·P(B)
-/// - ⊗ = multiplication: a * b
-///
-/// Models independent probabilistic events. This is the standard
-/// probabilistic semiring used in ProbDatalog / PRRDF and corresponds to
-/// Scallop's `add-mult-prob` provenance. The noisy-OR formula is exact for
-/// independent events and naturally bounded in [0, 1] without clamping.
+/// - Tag: f64 in [0, 1]; ⊕ = noisy-OR, ⊗ = multiplication
+/// - Models independent probabilistic events.
 #[derive(Debug, Clone)]
 pub struct AddMultProbability;
 
@@ -181,12 +147,8 @@ impl Provenance for AddMultProbability {
 
 /// Boolean provenance (classical two-valued logic).
 ///
-/// - Tag: bool
-/// - ⊕ = OR
-/// - ⊗ = AND
-///
-/// Degenerate case: no probability tracking. Equivalent to classical
-/// datalog materialisation. Useful for testing and as a baseline.
+/// - Tag: bool; ⊕ = OR, ⊗ = AND
+/// - No probability tracking; equivalent to classical datalog.
 #[derive(Debug, Clone)]
 pub struct BooleanProvenance;
 
@@ -225,10 +187,6 @@ impl Provenance for BooleanProvenance {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TopKProofs provenance
-// ---------------------------------------------------------------------------
-
 /// A proof is a set of input-variable IDs (all must hold simultaneously).
 pub type Proof = BTreeSet<u32>;
 /// A tag is at most k proofs, ranked by descending probability.
@@ -236,30 +194,11 @@ pub type TopKTag = Vec<Proof>;
 
 /// Top-K proof-tracking provenance.
 ///
-/// ⊕ = union of proof lists (keep top-k by probability, deduplicate)
-/// ⊗ = Cartesian product of proofs (merge variable ID sets)
-/// `recover_probability` = WMC via inclusion-exclusion over retained proofs
+/// Retains the k most probable proof paths for each derived fact.
+/// Probability is recovered from the retained proofs via weighted model counting.
 ///
-/// # Probability table (`prob_table`)
-///
-/// `prob_table` is an `Arc<Mutex<Vec<f64>>>`. The shared reference (`Arc`) means
-/// that all clones of a `TopKProofs` instance consult and update the **same** table,
-/// which is essential because the reasoner clones the provenance before seeding.
-/// Interior mutability (`Mutex`) lets `tag_from_probability_with_id` write into the
-/// table through `&self` (as required by the `Provenance` trait).
-///
-/// **Invariant**: `prob_table[i]` is the probability of the input fact assigned ID `i`
-/// during seeding. The table must be fully populated (all seeds written) before any
-/// call to `recover_probability` or proof-sorting inside `disjunction`/`conjunction`.
-/// After seeding, the table is read-only.
-///
-/// # k constraint
-///
-/// `k` must be in `[1, 63]`. The upper bound is an **implementation detail**:
-/// `recover_probability` uses a `u64` bitmask to iterate over all 2^m subsets of
-/// retained proofs (inclusion-exclusion), which requires `m ≤ 63`. This is not a
-/// theoretical semiring constraint — the semiring is well-defined for any k.
-/// In practice k ≤ 10 is recommended to keep WMC (O(2^k)) fast.
+/// Larger k gives more accurate results at higher cost; k ≤ 10 is recommended for
+/// most use cases. `k` must be in `[1, 63]`.
 #[derive(Debug, Clone)]
 pub struct TopKProofs {
     pub k: usize,
@@ -268,9 +207,6 @@ pub struct TopKProofs {
 
 impl TopKProofs {
     pub fn new(k: usize) -> Self {
-        // k <= 63 is an implementation limit: recover_probability uses a u64 bitmask
-        // to enumerate 2^m subsets, requiring m <= 63. This is NOT a semiring constraint.
-        // Use assert! (not debug_assert!) so release builds also catch invalid k.
         assert!(k >= 1 && k <= 63, "k must be in [1, 63]: u64 bitmask limit in recover_probability");
         Self { k, prob_table: Arc::new(Mutex::new(Vec::new())) }
     }
@@ -317,21 +253,25 @@ impl Provenance for TopKProofs {
         result
     }
 
-    /// Negation is **not supported** for proof-tracking provenance.
-    ///
-    /// `TopKProofs` is designed for **positive programs only** (no FILTER NOT EXISTS,
-    /// no negation-as-failure). DNF proof sets have no natural complement that remains
-    /// a finite proof set; a "negated proof" would require complement WMC which is
-    /// exponential in the number of variables.
-    ///
-    /// If stratified negation is required, use `BooleanProvenance`, `MinMaxProbability`,
-    /// or `AddMultProbability`. The current materialisation flow in
-    /// `provenance_semi_naive.rs` does not call `negate()`, but the `Provenance` trait
-    /// requires it — hence the explicit panic to catch any future accidental use.
-    fn negate(&self, _a: &TopKTag) -> TopKTag {
-        unimplemented!("negation is not defined for TopKProofs (positive programs only); \
-                        use BooleanProvenance, MinMaxProbability, or AddMultProbability \
-                        for programs with stratified negation")
+    /// Approximate negation. Returns `one()` for empty tags, `zero()` for certain facts;
+    /// otherwise allocates a synthetic seed with probability `1 − p`.
+    /// Use `WmcProvenance` for exact correlation-aware negation.
+    fn negate(&self, a: &TopKTag) -> TopKTag {
+        if a.is_empty() {
+            return self.one();
+        }
+        let p = self.recover_probability(a);
+        let complement = (1.0_f64 - p).clamp(0.0, 1.0);
+        if complement <= 0.0 {
+            return self.zero();
+        }
+        let mut table = self.prob_table.lock().unwrap();
+        let new_id = table.len() as u32;
+        table.push(complement);
+        drop(table);
+        let mut proof = BTreeSet::new();
+        proof.insert(new_id);
+        vec![proof]
     }
 
     fn saturate(&self, a: &TopKTag) -> TopKTag { a.clone() }
@@ -355,21 +295,8 @@ impl Provenance for TopKProofs {
         vec![proof]
     }
 
-    /// WMC via inclusion-exclusion over the DNF of the **retained** proofs. O(2^k).
-    ///
-    /// P(η₁ ∨ … ∨ ηₘ) = Σ_{S⊆{0..m}, S≠∅} (-1)^(|S|+1) · Π_{v ∈ ∪_{i∈S} ηᵢ} P(v)
-    ///
-    /// **Exactness caveat 1 — truncation**: if k < (total derivation paths), lower-ranked
-    /// proofs were discarded during `⊕` truncation and are not counted — the result is
-    /// then a conservative lower-bound approximation, not globally exact WMC. Choose k
-    /// large enough to retain every proof for exact results (at O(2^k) WMC cost).
-    ///
-    /// **Exactness caveat 2 — redundant proof slots**: proofs are ranked by raw
-    /// `proof_prob` (product of variable probabilities). This can waste scarce k slots
-    /// on subsumed proofs — e.g., both `{x}` and `{x, y}` may be retained even though
-    /// `{x}` already covers the mass of `{x, y}`. The WMC result is still correct for
-    /// the retained proofs, but the lower bound can be weaker than if subsumption-pruning
-    /// were applied. This is a known approximation tradeoff in the current implementation.
+    /// Computes the probability of a derived fact from its retained proof paths.
+    /// Result is an approximation when fewer than all proof paths were retained.
     fn recover_probability(&self, tag: &TopKTag) -> f64 {
         if tag.is_empty() { return 0.0; }
         let table = self.prob_table.lock().unwrap();
@@ -392,11 +319,145 @@ impl Provenance for TopKProofs {
     fn is_saturated(&self, old: &TopKTag, new: &TopKTag) -> bool { old == new }
 }
 
+/// A signed literal: `(seed_id, polarity)` where `true` = positive, `false` = negated.
+pub type WmcLiteral = (u32, bool);
+/// A single conjunction of signed seed literals (one proof path).
+pub type WmcClause = BTreeSet<WmcLiteral>;
+/// A DNF formula: disjunction of conjunctions — the complete proof formula.
+pub type WmcFormula = BTreeSet<WmcClause>;
+
+/// WMC provenance — exact Weighted Model Count via recursive Shannon expansion.
+///
+/// ⊕ = set-union of DNF clauses (subsumption-pruned)
+/// ⊗ = Cartesian-product of DNF clauses (contradictory + subsumed pruned)
+/// `negate` = De Morgan complement (signed literals, exact)
+/// `recover_probability` = Shannon WMC with memoization
+#[derive(Debug, Clone)]
+pub struct DnfWmcProvenance {
+    prob_table: Arc<Mutex<Vec<f64>>>,
+}
+
+impl DnfWmcProvenance {
+    pub fn new() -> Self {
+        Self { prob_table: Arc::new(Mutex::new(Vec::new())) }
+    }
+}
+
+impl Default for DnfWmcProvenance {
+    fn default() -> Self { Self::new() }
+}
+
+/// Backward-compatible alias. Use [`DnfWmcProvenance`] for explicit DNF or
+/// [`crate::sdd::SddProvenance`] for the faster SDD-based implementation.
+pub type WmcProvenance = DnfWmcProvenance;
+
+/// Remove clauses subsumed by a shorter clause in the same formula.
+fn remove_subsumed(formula: WmcFormula) -> WmcFormula {
+    let clauses: Vec<WmcClause> = formula.into_iter().collect();
+    clauses.iter()
+        .filter(|c1| !clauses.iter().any(|c2| c2 != *c1 && c2.is_subset(c1)))
+        .cloned()
+        .collect()
+}
+
+/// Remove contradictory clauses (those containing both `(v, true)` and `(v, false)`).
+pub(crate) fn remove_contradictory(formula: WmcFormula) -> WmcFormula {
+    formula.into_iter()
+        .filter(|c| !c.iter().any(|&(v, pol)| c.contains(&(v, !pol))))
+        .collect()
+}
+
+fn shannon_wmc(
+    formula: &WmcFormula,
+    table: &[f64],
+    memo: &mut std::collections::HashMap<WmcFormula, f64>,
+) -> f64 {
+    if formula.is_empty() { return 0.0; }
+    if formula.contains(&BTreeSet::new()) { return 1.0; }
+    if let Some(&cached) = memo.get(formula) { return cached; }
+
+    let x = formula.iter().flat_map(|c| c.iter()).map(|&(v, _)| v).min().unwrap();
+    let px = *table.get(x as usize).unwrap_or(&1.0);
+
+    let phi_true: WmcFormula = formula.iter()
+        .filter(|c| !c.contains(&(x, false)))
+        .map(|c| c.iter().filter(|&&(v, _)| v != x).copied().collect())
+        .collect();
+    let phi_false: WmcFormula = formula.iter()
+        .filter(|c| !c.contains(&(x, true)))
+        .map(|c| c.iter().filter(|&&(v, _)| v != x).copied().collect())
+        .collect();
+
+    let result = px * shannon_wmc(&phi_true, table, memo)
+               + (1.0 - px) * shannon_wmc(&phi_false, table, memo);
+    memo.insert(formula.clone(), result);
+    result
+}
+
+impl Provenance for DnfWmcProvenance {
+    type Tag = WmcFormula;
+
+    fn zero(&self) -> WmcFormula { BTreeSet::new() }
+    fn one(&self) -> WmcFormula { std::iter::once(BTreeSet::new()).collect() }
+
+    fn disjunction(&self, a: &WmcFormula, b: &WmcFormula) -> WmcFormula {
+        let union: WmcFormula = a.iter().chain(b.iter()).cloned().collect();
+        remove_subsumed(union)
+    }
+
+    fn conjunction(&self, a: &WmcFormula, b: &WmcFormula) -> WmcFormula {
+        if a.is_empty() || b.is_empty() { return self.zero(); }
+        let product: WmcFormula = a.iter().flat_map(|ca|
+            b.iter().map(move |cb| ca.iter().chain(cb.iter()).copied().collect::<WmcClause>())
+        ).collect();
+        remove_subsumed(remove_contradictory(product))
+    }
+
+    /// Exact negation over the proof formula, preserving correlations between literals.
+    fn negate(&self, a: &WmcFormula) -> WmcFormula {
+        if a.is_empty() { return self.one(); }
+        if a.contains(&BTreeSet::new()) { return self.zero(); }
+        let mut result = self.one();
+        for clause in a {
+            if result.is_empty() { break; }
+            let neg_clause: WmcFormula = clause.iter()
+                .map(|&(v, pol)| std::iter::once((v, !pol)).collect::<WmcClause>())
+                .collect();
+            result = self.conjunction(&result, &neg_clause);
+        }
+        result
+    }
+
+    fn saturate(&self, a: &WmcFormula) -> WmcFormula { a.clone() }
+
+    fn tag_from_probability(&self, prob: f64) -> WmcFormula {
+        let mut table = self.prob_table.lock().unwrap();
+        let id = table.len() as u32;
+        table.push(prob.clamp(0.0, 1.0));
+        std::iter::once(std::iter::once((id, true)).collect()).collect()
+    }
+
+    fn tag_from_probability_with_id(&self, prob: f64, id: usize) -> WmcFormula {
+        let mut table = self.prob_table.lock().unwrap();
+        if id >= table.len() { table.resize(id + 1, 0.0); }
+        table[id] = prob.clamp(0.0, 1.0);
+        drop(table);
+        std::iter::once(std::iter::once((id as u32, true)).collect()).collect()
+    }
+
+    fn recover_probability(&self, tag: &WmcFormula) -> f64 {
+        if tag.is_empty() { return 0.0; }
+        let table = self.prob_table.lock().unwrap();
+        let mut memo = std::collections::HashMap::new();
+        shannon_wmc(tag, &table, &mut memo).clamp(0.0, 1.0)
+    }
+
+    fn is_saturated(&self, old: &WmcFormula, new: &WmcFormula) -> bool { old == new }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- Semiring law tests for MinMaxProbability ---
 
     #[test]
     fn minmax_identities() {
@@ -436,8 +497,6 @@ mod tests {
         assert!((lhs - rhs).abs() < PROB_EPSILON);
     }
 
-    // --- Semiring law tests for AddMultProbability ---
-
     #[test]
     fn addmult_identities() {
         let p = AddMultProbability;
@@ -475,8 +534,6 @@ mod tests {
         assert!((result - 0.88).abs() < PROB_EPSILON);
     }
 
-    // --- Semiring law tests for BooleanProvenance ---
-
     #[test]
     fn boolean_identities() {
         let p = BooleanProvenance;
@@ -492,8 +549,6 @@ mod tests {
         assert_eq!(p.conjunction(&true, &p.zero()), false);
     }
 
-    // --- Conversion tests ---
-
     #[test]
     fn minmax_roundtrip() {
         let p = MinMaxProbability;
@@ -508,8 +563,6 @@ mod tests {
         assert_eq!(p.tag_from_probability(0.0), false);
     }
 
-    // --- Saturation tests ---
-
     #[test]
     fn minmax_saturation_convergence() {
         let p = MinMaxProbability;
@@ -523,8 +576,6 @@ mod tests {
         assert!(p.is_saturated(&true, &true));
         assert!(!p.is_saturated(&true, &false));
     }
-
-    // --- TopKProofs tests ---
 
     fn make_proof(ids: &[u32]) -> Proof {
         ids.iter().copied().collect()

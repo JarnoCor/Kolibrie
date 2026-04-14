@@ -8,22 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Combined SPARQL / RDF-star / RULE / Provenance-RULE example
-//!
-//! Demonstrates all four syntax elements communicating in a single file:
-//!
-//!   1. Standard RDF triples + SPARQL SELECT queries
-//!   2. RDF-star quoted triples + SPARQL-star SELECT queries
-//!   3. Classical RULE syntax  (deterministic inference)
-//!   4. Provenance-annotated RULE … PROB(…) syntax  (provenance-based inference)
-//!
-//! Communication chain
-//! ───────────────────
-//!   RDF data  ──►  RULE :OverheatAlert  ──►  RULE :CriticalRisk PROB(min,…)
-//!   RDF-star  ◄────────────────────────────── SPARQL-star query
-//!
-//! Database growth: 9 → 11 → 13 triples
-
 use kolibrie::parser::*;
 use kolibrie::execute_query::*;
 use kolibrie::sparql_database::SparqlDatabase;

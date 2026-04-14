@@ -23,6 +23,17 @@
 22. Add provenance semiring framework and TagStore for semiring-based reasoning
 23. Remove old probabilistic reasoning path and migrate RULE PROB inference to provenance-based materialisation
 24. Update combined syntax and combined rules examples to use provenance reasoning
+25. Add stratified negation-as-failure (NAF) support: `negative_premise` field in Rule, safety check, `try_add_rule`
+26. Add NOT body atom syntax in SPARQL rule parser
+27. Add single-negative-stratum evaluation in provenance semi-naive materialisation
+28. Add `WmcProvenance` (exact DNF-based WMC with signed literals, De Morgan negation, contradictory-clause pruning)
+29. Add `TopKProofs::negate()` approximate complement via synthetic probability seed
+30. Add polarity-aware RDF-star explanation export (`prob:hasNegatedSeed`)
+31. Add SDD (Sentential Decision Diagram) engine: `SddManager`, vtree, apply, negate, WMC — O(|SDD|) inference
+32. Add `SddProvenance` implementing `Provenance` trait backed by SDD
+33. Add `PROB(combination=sdd)` parser arm
+34. Rename `WmcProvenance` to `DnfWmcProvenance` with backward-compat type alias
+35. Add `pub mod sdd` to shared crate
 
 0.1.1
 1. Modify whole project by making Cargo workspace

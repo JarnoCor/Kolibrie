@@ -52,36 +52,39 @@ fn main() {
     let strong_bond_id   = kg.dictionary.write().unwrap().encode("strongBond");
     let trust_comm_id    = kg.dictionary.write().unwrap().encode("trustCommunity");
 
-    // Rule 1: knows(X,Y) ∧ knows(Y,Z) → connected(X,Z)  (two-hop)
+    // Rule 1: knows(X,Y) ∧ knows(Y,Z) -> connected(X,Z)  (two-hop)
     let rule1 = Rule {
         premise: vec![
             (Term::Variable("X".to_string()), Term::Constant(knows_id),     Term::Variable("Y".to_string())),
             (Term::Variable("Y".to_string()), Term::Constant(knows_id),     Term::Variable("Z".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()), Term::Constant(connected_id), Term::Variable("Z".to_string()),
         )],
         filters: vec![],
     };
 
-    // Rule 2: connected(X,Y) ∧ connected(Y,Z) → connected(X,Z)  (transitive closure)
+    // Rule 2: connected(X,Y) ∧ connected(Y,Z) -> connected(X,Z)  (transitive closure)
     let rule2 = Rule {
         premise: vec![
             (Term::Variable("X".to_string()), Term::Constant(connected_id), Term::Variable("Y".to_string())),
             (Term::Variable("Y".to_string()), Term::Constant(connected_id), Term::Variable("Z".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()), Term::Constant(connected_id), Term::Variable("Z".to_string()),
         )],
         filters: vec![],
     };
 
-    // Rule 3: strongBond(X,Y) ∧ strongBond(Y,Z) → trustCommunity(X,Z)  (uses provenance output)
+    // Rule 3: strongBond(X,Y) ∧ strongBond(Y,Z) -> trustCommunity(X,Z)  (uses provenance output)
     let rule3 = Rule {
         premise: vec![
             (Term::Variable("X".to_string()), Term::Constant(strong_bond_id), Term::Variable("Y".to_string())),
             (Term::Variable("Y".to_string()), Term::Constant(strong_bond_id), Term::Variable("Z".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()), Term::Constant(trust_comm_id), Term::Variable("Z".to_string()),
         )],
@@ -92,26 +95,28 @@ fn main() {
     kg.add_rule(rule2);
     // Rule 3 is added later — it uses strongBond from the provenance round
 
-    // Rule 4: trusts(X,Y) ∧ trusts(Y,Z) → indirectTrust(X,Z)
+    // Rule 4: trusts(X,Y) ∧ trusts(Y,Z) -> indirectTrust(X,Z)
     //   Uses AddMultProbability provenance (⊗ = multiply for conjunction)
     let rule4 = Rule {
         premise: vec![
             (Term::Variable("X".to_string()), Term::Constant(trusts_id),   Term::Variable("Y".to_string())),
             (Term::Variable("Y".to_string()), Term::Constant(trusts_id),   Term::Variable("Z".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()), Term::Constant(indirect_id), Term::Variable("Z".to_string()),
         )],
         filters: vec![],
     };
 
-    // Rule 5: connected(X,Z) ∧ trusts(X,Z) → strongBond(X,Z)
+    // Rule 5: connected(X,Z) ∧ trusts(X,Z) -> strongBond(X,Z)
     //   Uses classically-inferred `connected` from Round 1
     let rule5 = Rule {
         premise: vec![
             (Term::Variable("X".to_string()), Term::Constant(connected_id),   Term::Variable("Z".to_string())),
             (Term::Variable("X".to_string()), Term::Constant(trusts_id),      Term::Variable("Z".to_string())),
         ],
+        negative_premise: vec![],
         conclusion: vec![(
             Term::Variable("X".to_string()), Term::Constant(strong_bond_id), Term::Variable("Z".to_string()),
         )],
