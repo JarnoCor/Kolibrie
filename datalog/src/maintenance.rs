@@ -7,6 +7,7 @@
 mod counting;
 mod dred;
 mod fbf;
+mod imars;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -20,6 +21,8 @@ pub use counting::multiset_subtract;
 pub use dred::DRedMaintenance;
 
 pub use fbf::FBFMaintenance;
+
+pub use imars::IMARSWindow;
 
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
