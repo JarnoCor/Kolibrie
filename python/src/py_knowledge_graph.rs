@@ -138,7 +138,7 @@ impl PyKnowledgeGraph {
                 .into_iter()
                 .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
                 .collect(),
-
+            negative_premise: vec![],
             filters: rule.filters
                 .into_iter()
                 .map(|f| shared::rule::FilterCondition {
@@ -229,6 +229,8 @@ impl PyKnowledgeGraph {
                 .into_iter()
                 .map(|p| (convert_term(p.subject), convert_term(p.predicate), convert_term(p.object)))
                 .collect(),
+
+            negative_premise: vec![],
 
             filters: rule.filters
                 .into_iter()

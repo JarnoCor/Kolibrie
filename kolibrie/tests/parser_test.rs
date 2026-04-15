@@ -450,4 +450,25 @@ WHERE {
         assert!(prob.confidence.is_none());
     }
 
+    #[test]
+    fn test_rule_with_prob_annotation_wmc() {
+        let input = r#"RULE :WmcRule PROB(combination=wmc) :-
+CONSTRUCT {
+    ?x ex:related ?z .
+}
+WHERE {
+    ?x ex:related ?y .
+    ?y ex:related ?z .
+}"#;
+
+        let result = parse_rule(input);
+        assert!(result.is_ok(), "Failed to parse RULE with wmc PROB: {:?}", result.err());
+
+        let (_, rule) = result.unwrap();
+        let prob = rule.prob_annotation.as_ref().expect("PROB annotation should be present");
+        assert_eq!(prob.combination, "wmc");
+        assert!(prob.threshold.is_none(), "threshold should be None for wmc");
+        assert!(prob.confidence.is_none());
+    }
+
 }

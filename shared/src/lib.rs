@@ -22,3 +22,4 @@ pub mod join_algorithm;
 pub mod quoted_triple_store;
 pub mod provenance;
 pub mod tag_store;
+pub mod sdd;

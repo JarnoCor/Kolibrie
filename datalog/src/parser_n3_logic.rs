@@ -156,8 +156,9 @@ pub fn parse_n3_rule<'a>(
 
     let rule = Rule {
         premise: premise_parsed,
+        negative_premise: vec![],
         filters: vec![],
-        conclusion: conclusions_parsed,  // Updated to use plural field name
+        conclusion: conclusions_parsed,
     };
 
     Ok((input, (prefixes, rule)))

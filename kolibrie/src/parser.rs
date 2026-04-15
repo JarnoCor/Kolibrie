@@ -636,7 +636,7 @@ pub fn parse_subquery<'a>(input: &'a str) -> IResult<&'a str, SubQuery<'a>> {
     let (input, variables) = parse_select(input)?;
 
     // Parse WHERE clause (recursive)
-    let (input, (patterns, filters, values_clause, binds, _, _,)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds, _, _, _)) = parse_where(input)?;
 
     let (input, limit) = opt(preceded(multispace0, parse_limit)).parse(input)?;
 
@@ -690,6 +690,15 @@ pub fn parse_window_block(input: &str) -> IResult<&str, WindowBlock<'_>> {
     }))
 }
 
+/// Parse `NOT triple_block` — negation-as-failure body atom.
+/// Returns the list of negated triple patterns.
+fn parse_not_triple_block(input: &str) -> IResult<&str, Vec<(&str, &str, &str)>> {
+    let (input, _) = multispace0.parse(input)?;
+    let (input, _) = tag("NOT").parse(input)?;
+    let (input, _) = multispace1.parse(input)?;
+    parse_triple_block(input)
+}
+
 pub fn parse_where(
     input: &str,
 ) -> IResult<
@@ -701,6 +710,7 @@ pub fn parse_where(
         Vec<(&str, Vec<&str>, &str)>,
         Vec<SubQuery<'_>>,
         Vec<WindowBlock<'_>>,
+        Vec<(&str, &str, &str)>,  // negated triple patterns (NOT X)
     ),
 > {
     let (input, _) = multispace0.parse(input)?;
@@ -710,6 +720,7 @@ pub fn parse_where(
     let (input, _) = multispace0.parse(input)?;
 
     let mut patterns = Vec::new();
+    let mut neg_patterns = Vec::new();
     let mut filters = Vec::new();
     let mut binds = Vec::new();
     let mut subqueries = Vec::new();
@@ -731,6 +742,9 @@ pub fn parse_where(
         // Try to parse each possible component
         current_input = if let Ok((new_input, window_block)) = parse_window_block(current_input) {
             window_blocks.push(window_block);
+            new_input
+        } else if let Ok((new_input, not_triples)) = parse_not_triple_block(current_input) {
+            neg_patterns.extend(not_triples);
             new_input
         } else if let Ok((new_input, triple_block)) = parse_triple_block(current_input) {
             patterns.extend(triple_block);
@@ -767,7 +781,7 @@ pub fn parse_where(
 
     Ok((
         current_input,
-        (patterns, filters, values_clause, binds, subqueries, window_blocks),
+        (patterns, filters, values_clause, binds, subqueries, window_blocks, neg_patterns),
     ))
 }
 
@@ -798,7 +812,7 @@ pub fn parse_register_clause(input: &str) -> IResult<&str, RegisterClause<'_>> {
     let (input, _) = multispace0.parse(input)?;
     
     // Parse WHERE clause with window support
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds, subqueries, window_blocks, _)) = parse_where(input)?;
     
     Ok((input, RegisterClause {
         stream_type,
@@ -1066,7 +1080,7 @@ pub fn parse_sparql_query(
     let (input, _) = multispace0.parse(input)?;
 
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds, subqueries, window_block)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds, subqueries, window_block, _)) = parse_where(input)?;
 
     // Optionally parse the GROUP BY clause
     let (input, group_vars) =
@@ -1229,8 +1243,8 @@ pub fn parse_ml_predict(input: &str) -> IResult<&str, MLPredictClause<'_>> {
             // Parse WHERE patterns and filters (simplified - use your actual WHERE parser)
             let where_clause = &input_query[where_idx + 5..].trim();
             // This is a placeholder - you should use your actual pattern and filter parser here
-            let (_rest, (patterns, filters, _values, _binds, _subqueries, _)) = 
-                parse_where(where_clause).unwrap_or_else(|_| (where_clause, (vec![], vec![], None, vec![], vec![], vec![])));
+            let (_rest, (patterns, filters, _values, _binds, _subqueries, _, _)) =
+                parse_where(where_clause).unwrap_or_else(|_| (where_clause, (vec![], vec![], None, vec![], vec![], vec![], vec![])));
             
             where_patterns = patterns;
             filter_conditions = filters;
@@ -1381,9 +1395,9 @@ fn parse_policy_duration_numeric(input: &str) -> IResult<&str, std::time::Durati
 }
 
 /// Parse the policy name / spec after `WITH POLICY`.
-/// - `steal`  → SyncPolicy::Steal
-/// - `wait`   → SyncPolicy::Wait
-/// - `(timeout=<dur>, fallback=steal|drop)` → SyncPolicy::Timeout{...}
+/// - `steal`  -> SyncPolicy::Steal
+/// - `wait`   -> SyncPolicy::Wait
+/// - `(timeout=<dur>, fallback=steal|drop)` -> SyncPolicy::Timeout{...}
 fn parse_sync_policy(input: &str) -> IResult<&str, shared::query::SyncPolicy> {
     alt((
         parse_sync_policy_steal,
@@ -1599,16 +1613,16 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
     let (input, _) = multispace0.parse(input)?;
     
     // Parse WHERE clause
-    let (input, (patterns, filters, values_clause, binds, subqueries, _)) = parse_where(input)?;
+    let (input, (patterns, filters, values_clause, binds, subqueries, _, neg_patterns)) = parse_where(input)?;
     let body = (patterns, filters, values_clause, binds, subqueries);
-    
+
     // Optional dot at the end of rule
     let (input, _) = opt(preceded(multispace0, char('.'))).parse(input)?;
     let (input, _) = multispace0.parse(input)?;
-    
+
     // Optionally parse ML.PREDICT block if it exists
     let (input, ml_predict) = opt(parse_ml_predict).parse(input)?;
-    
+
     Ok((
         input,
         CombinedRule {
@@ -1616,6 +1630,7 @@ pub fn parse_rule(input: &str) -> IResult<&str, CombinedRule<'_>> {
             stream_type,
             window_clause,
             body,
+            negated_body: neg_patterns,
             conclusion: conclusions,
             ml_predict,
             prob_annotation,
@@ -1808,6 +1823,12 @@ pub fn convert_combined_rule<'a>(
         .map(|triple| convert_triple_pattern(triple, dict, prefixes))
         .collect::<Vec<TriplePattern>>();
 
+    let negative_premise_patterns = cr
+        .negated_body
+        .into_iter()
+        .map(|triple| convert_triple_pattern(triple, dict, prefixes))
+        .collect::<Vec<TriplePattern>>();
+
     // Convert filter expressions to filter conditions
     let filter_conditions = cr
         .body
@@ -1966,6 +1987,7 @@ pub fn convert_combined_rule<'a>(
 
     Rule {
         premise: premise_patterns,
+        negative_premise: negative_premise_patterns,
         filters: filter_conditions,
         conclusion: conclusion_triples,
     }
@@ -2131,6 +2153,36 @@ pub fn process_rule_definition(
                     let mut dict = kg.dictionary.write().unwrap();
                     let mut qt_store = database.quoted_triple_store.write().unwrap();
                     let rdf_star = tag_store.encode_as_rdf_star(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                // Exact proof-formula provenance (WMC via Shannon expansion)
+                "wmc" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(
+                        shared::provenance::WmcProvenance::new()
+                    );
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
+                    drop(qt_store);
+                    drop(dict);
+                    for triple in rdf_star {
+                        database.triples.insert(triple);
+                    }
+                    facts
+                }
+                // SDD-based exact proof-formula provenance (WMC via SDD)
+                "sdd" => {
+                    let (facts, tag_store) = kg.infer_new_facts_with_provenance(
+                        shared::sdd::SddProvenance::new()
+                    );
+                    let mut dict = kg.dictionary.write().unwrap();
+                    let mut qt_store = database.quoted_triple_store.write().unwrap();
+                    let rdf_star = tag_store.encode_as_rdf_star_with_explanation(&mut dict, &mut qt_store);
                     drop(qt_store);
                     drop(dict);
                     for triple in rdf_star {

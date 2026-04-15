@@ -176,8 +176,6 @@ pub fn evaluate_filters(
     true
 }
 
-/// Extracts parameters
-/// current_bindings: the hashtable that is used
 pub fn join_premise_with_hash_join(
     premise: &TriplePattern,
     all_facts: &[Triple],
@@ -194,12 +192,26 @@ pub fn join_premise_with_hash_join(
 }
 
 impl Reasoner {
-    /// Add a dynamic rule to the graph
+    /// Add a dynamic rule to the graph.
+    ///
+    /// Panics if the rule has unsafe negation (a variable in `negative_premise`
+    /// that is not bound by `premise`). For a non-panicking version use [`try_add_rule`].
+    ///
+    /// [`try_add_rule`]: Self::try_add_rule
     pub fn add_rule(&mut self, rule: Rule) {
+        self.try_add_rule(rule).expect("rule safety check failed");
+    }
+
+    /// Add a dynamic rule to the graph, returning `Err` if it violates safety.
+    ///
+    /// Safety requirement: every variable in `negative_premise` must appear in `premise`.
+    pub fn try_add_rule(&mut self, rule: Rule) -> Result<(), String> {
+        shared::rule::check_rule_safety(&rule)?;
         let rule_id = self.rules.len();
         self.rules.push(rule.clone());
         for prem in &rule.premise {
             self.rule_index.insert_premise_pattern(prem, rule_id);
         }
+        Ok(())
     }
 }

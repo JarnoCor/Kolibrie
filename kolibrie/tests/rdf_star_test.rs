@@ -164,7 +164,7 @@ fn test_sparql_parser_quoted_triple_pattern() {
     let input = r#"WHERE { << <http://example.org/emp38> <http://example.org/jobTitle> <http://example.org/AssistantDesigner> >> <http://example.org/statedBy> ?who . }"#;
     let result = parse_where(input);
     assert!(result.is_ok(), "Should parse WHERE with quoted triple: {:?}", result);
-    let (_, (patterns, _, _, _, _, _)) = result.unwrap();
+    let (_, (patterns, _, _, _, _, _, _)) = result.unwrap();
     assert_eq!(patterns.len(), 1, "Should have one pattern");
     let (s, p, o) = &patterns[0];
     println!("Subject: '{}'", s);
