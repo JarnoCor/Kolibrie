@@ -404,6 +404,7 @@ mod tests {
                 Term::Variable("z".to_string()),
             ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 reachable,
@@ -428,6 +429,7 @@ mod tests {
                 Term::Variable("y".to_string()),
             ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("x".to_string()),
                 encoded_reachable,
@@ -565,6 +567,7 @@ mod tests {
                 Term::Variable("y".to_string()),
             ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("y".to_string()),
                 encoded_r,
@@ -679,6 +682,7 @@ mod tests {
                 Term::Variable("y".to_string()),
             ),
             ],
+            negative_premise: vec![],
             conclusion: vec![(
                 Term::Variable("y".to_string()),
                 encoded_r,

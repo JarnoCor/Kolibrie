@@ -93,6 +93,7 @@ fn construct_triple(
             })
         },
         Term::Constant(c) => *c,
+        _ => 0
     };
     
     let predicate = match &conclusion.1 {
@@ -103,6 +104,7 @@ fn construct_triple(
             })
         },
         Term::Constant(c) => *c,
+        _ => 0
     };
 
     let object = match &conclusion.2 {
@@ -116,6 +118,7 @@ fn construct_triple(
             }
         },
         Term::Constant(c) => *c,
+        _ => 0
     };
 
     Triple {
@@ -152,7 +155,7 @@ fn evaluate_rule_with_restrictions(dict: &mut Dictionary, rule: &Rule, positive_
 fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, u32>, positive: &HashSet<Triple>) -> bool {
 
         for triple in &rule.premise {
-            let subject = match &triple.0{
+            let subject = match &triple.0 {
                 Term::Variable(v) => {
                     binding.get(v).copied().unwrap_or_else(|| {
                         eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
@@ -160,6 +163,7 @@ fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, 
                     })
                 },
                 Term::Constant(c) => *c,
+                _ => 0
             };
 
             let predicate = match &triple.1 {
@@ -167,6 +171,7 @@ fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, 
                     dict.encode(v)
                 },
                 Term::Constant(c) => *c,
+                _ => 0
             };
 
             let object = match &triple.2 {
@@ -180,6 +185,7 @@ fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, 
                     }
                 },
                 Term::Constant(c) => *c,
+                _ => 0
             };
 
             let constructed = Triple {
