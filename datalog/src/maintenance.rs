@@ -7,7 +7,7 @@
 mod counting;
 mod dred;
 mod fbf;
-mod imars;
+pub mod imars;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ pub use dred::DRedMaintenance;
 
 pub use fbf::FBFMaintenance;
 
-pub use imars::IMARSWindow;
+// pub use imars::IMARSWindow;
 
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
@@ -128,12 +128,10 @@ fn construct_triple(
     }
 }
 
-fn evaluate_rule_with_restrictions(dict: &mut Dictionary, rule: &Rule, positive_facts: &HashSet<Triple>, positive_1: &HashSet<Triple>, positive_2: &HashSet<Triple>) -> Vec<Triple> {
+fn evaluate_rule_with_restrictions(results: &mut Vec<Triple>, dict: &mut Dictionary, rule: &Rule, positive_facts: &HashSet<Triple>, positive_1: &HashSet<Triple>, positive_2: &HashSet<Triple>) {
 
     let bindings = join_rule(rule, positive_facts, positive_1);
-
-    let mut results = Vec::new();
-
+    results.clear();
 
     for binding in bindings {
         // check if the bindings are disjoint with positive_2 or not
@@ -148,8 +146,6 @@ fn evaluate_rule_with_restrictions(dict: &mut Dictionary, rule: &Rule, positive_
             }
         }
     }
-
-    results
 }
 
 fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, u32>, positive: &HashSet<Triple>) -> bool {

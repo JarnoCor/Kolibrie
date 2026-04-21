@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 /// A struct for incremental view maintenance (IVM) using the Delete and Rederive approach.
 ///
 /// Contains the [`Reasoner`] to perform IVM on, as well as the explicit facts.
+#[derive(Clone)]
 pub struct DRedMaintenance {
     /// The [`Reasoner`] containing the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) to perform IVM on.
     pub reasoner: Reasoner,

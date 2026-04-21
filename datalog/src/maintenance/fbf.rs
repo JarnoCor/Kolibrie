@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 /// A struct for incremental view maintenance (IVM) using the Forward/Backward/Forward approach.
 ///
 /// Contains the [`Reasoner`] to perform IVM on, as well as the explicit facts.
+#[derive(Clone)]
 pub struct FBFMaintenance {
     /// The [`Reasoner`] containing the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) to perform IVM on.
     pub reasoner: Reasoner,
@@ -18,7 +19,6 @@ pub struct FBFMaintenance {
     pub explicit: HashSet<Triple>,
     /// The maximum amount of backward steps.
     steps: u32,
-
 }
 
 impl FBFMaintenance {
@@ -233,13 +233,13 @@ impl FBFMaintenance {
     fn saturate(&mut self, triple: Triple, to_remove: &Vec<Triple>, checked_facts: &mut HashSet<Triple>, proved_facts: &mut HashSet<Triple>, delayed_facts: &mut HashSet<Triple>) -> bool {
         // the current fact is now being checked
         checked_facts.insert(triple.clone());
-        let remaining_explicit: HashSet<Triple> = self.explicit.iter()
-                .filter(|triple| !to_remove.contains(*triple))
-                .cloned()
-                .collect();
+        // let remaining_explicit: HashSet<Triple> = self.explicit.iter()
+        //         .filter(|triple| !to_remove.contains(*triple))
+        //         .cloned()
+        //         .collect();
 
         // try to prove the fact using the delayed facts or the remaining explicit facts
-        if delayed_facts.contains(&triple) || remaining_explicit.contains(&triple) {
+        if delayed_facts.contains(&triple) || (self.explicit.contains(&triple) && !to_remove.contains(&triple))/*remaining_explicit.contains(&triple)*/ {
             let mut n_p: HashSet<Triple> = HashSet::from([triple]);
             let mut delta_p: HashSet<Triple>;
 

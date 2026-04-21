@@ -39,6 +39,7 @@ impl Default for Tick {
     }
 }
 
+#[derive(Clone)]
 pub struct Report {
     strategies: Vec<ReportStrategy>,
     last_change: BTreeSet<TimestampedTriple>,
@@ -82,7 +83,7 @@ impl<I> ContentContainer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
 {
-    fn new() -> ContentContainer<I> {
+    pub fn new() -> ContentContainer<I> {
         ContentContainer {
             elements: HashSet::new(),
             last_timestamp_changed: 0,
@@ -118,17 +119,36 @@ where
 }
 
 pub struct IMARSWindow {
-    reasoner: Reasoner,
-    width: usize,
-    slide: usize,
-    timestamped_contents: BTreeSet<TimestampedTriple>,
+    pub reasoner: Reasoner,
+    pub width: usize,
+    pub slide: usize,
+    pub timestamped_contents: BTreeSet<TimestampedTriple>,
+    index: HashMap<Triple, u64>,
     report: Report,
     tick: Tick,
-    app_time: usize,
-    last_emit_time: usize,
+    pub app_time: usize,
+    pub last_emit_time: usize,
     consumer: Option<Sender<ContentContainer<TimestampedTriple>>>,
     // Make callbacks Send so they can be safely transferred to worker threads
     call_back: Option<Box<dyn FnMut(ContentContainer<TimestampedTriple>) -> () + Send + 'static>>,
+}
+
+impl Clone for IMARSWindow {
+    fn clone(&self) -> Self {
+        Self {
+            reasoner: self.reasoner.clone(),
+            width: self.width.clone(),
+            slide: self.slide.clone(),
+            timestamped_contents: self.timestamped_contents.clone(),
+            index: self.index.clone(),
+            report: self.report.clone(),
+            tick: self.tick.clone(),
+            app_time: self.app_time.clone(),
+            last_emit_time: self.last_emit_time.clone(),
+            consumer: self.consumer.clone(),
+            call_back: None
+        }
+    }
 }
 
 impl IMARSWindow {
@@ -138,6 +158,7 @@ impl IMARSWindow {
             width,
             slide,
             timestamped_contents: BTreeSet::new(),
+            index: HashMap::new(),
             report,
             tick,
             app_time: 0,
@@ -235,6 +256,7 @@ impl IMARSWindow {
         while let Some(triple) = self.timestamped_contents.first() {
             if triple.timestamp < now.try_into().unwrap() {
                 let deleted = self.timestamped_contents.pop_first().unwrap();
+                self.index.remove(&deleted.triple);
                 self.reasoner.index_manager.delete(&deleted.triple);
             } else {
                 break;
@@ -252,11 +274,12 @@ impl IMARSWindow {
             let expiration_triple = TimestampedTriple { triple: triple.triple.clone(), timestamp: expiration };
 
             // case 1: the triple renews another one already present
-            if let Some(present_triple) = self.timestamped_contents.iter()
-                    .find(|timestamped_triple| timestamped_triple.triple == expiration_triple.triple) {
+            if let Some(present_triple_ts) = self.index.get(&triple.triple) {
 
-                if expiration > present_triple.timestamp {
-                    let to_remove = present_triple.clone();
+                if expiration > *present_triple_ts {
+                    let to_remove = TimestampedTriple { triple: triple.triple.clone(), timestamp: *present_triple_ts };
+
+                    self.index.insert(triple.triple.clone(), expiration);
 
                     self.timestamped_contents.remove(&to_remove);
                     self.timestamped_contents.insert(expiration_triple);
@@ -266,6 +289,7 @@ impl IMARSWindow {
             }
             // case 2: the triple was not already present
             else {
+                self.index.insert(triple.triple.clone(), expiration_triple.timestamp);
                 self.timestamped_contents.insert(expiration_triple);
 
                 self.reasoner.index_manager.insert(&triple.triple);
@@ -297,11 +321,12 @@ impl IMARSWindow {
                         let expiration_triple = TimestampedTriple { triple: inferred.clone(), timestamp: min_timestamp };
 
                         // case 1: the triple renews another one already present
-                        if let Some(present_triple) = self.timestamped_contents.iter()
-                                .find(|timestamped_triple| timestamped_triple.triple == expiration_triple.triple) {
+                        if let Some(present_triple_ts) = self.index.get(&inferred) {
 
-                            if min_timestamp > present_triple.timestamp {
-                                let to_remove = present_triple.clone();
+                            if min_timestamp > *present_triple_ts {
+                                let to_remove = TimestampedTriple { triple: inferred.clone(), timestamp: *present_triple_ts };
+
+                                self.index.insert(inferred.clone(), min_timestamp);
 
                                 self.timestamped_contents.remove(&to_remove);
                                 self.timestamped_contents.insert(expiration_triple.clone());
@@ -311,6 +336,7 @@ impl IMARSWindow {
                         }
                         // case 2: the triple was not already present
                         else {
+                            self.index.insert(inferred.clone(), min_timestamp);
                             self.timestamped_contents.insert(expiration_triple.clone());
 
                             self.reasoner.index_manager.insert(&inferred);
@@ -393,7 +419,7 @@ where
 }
 
 #[allow(dead_code)]
-struct Consumer<I>
+pub struct Consumer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
 {
@@ -405,14 +431,14 @@ impl<I> Consumer<I>
 where
     I: Eq + PartialEq + Clone + Debug + Hash + Send + 'static,
 {
-    fn new() -> Consumer<I> {
+    pub fn new() -> Consumer<I> {
         Consumer {
             inner: Arc::new(ConsumerInner {
                 data: Mutex::new(Vec::new()),
             }),
         }
     }
-    fn start(&self, receiver: Receiver<ContentContainer<I>>) {
+    pub fn start(&self, receiver: Receiver<ContentContainer<I>>) {
         let consumer_temp = self.inner.clone();
         thread::spawn(move || loop {
             match receiver.recv() {

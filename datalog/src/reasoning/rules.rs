@@ -12,15 +12,18 @@ pub fn matches_rule_pattern(
     variable_bindings: &mut HashMap<String, u32>,
 ) -> bool {
     // Create a copy of bindings to test against (rollback on failure)
-    let mut temp_bindings = variable_bindings.clone();
+    // let mut temp_bindings = variable_bindings.clone();
+    // Track variable inserted so we can roll back if necessary
+    let mut inserted = Vec::new();
 
     // Subject
     let s_ok = match &pattern.0 {
         Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
+            if let Some(&bound) = variable_bindings.get(v) {
                 bound == fact.subject
             } else {
-                temp_bindings.insert(v.clone(), fact.subject);
+                variable_bindings.insert(v.clone(), fact.subject);
+                inserted.push(v.clone());
                 true
             }
         }
@@ -34,10 +37,11 @@ pub fn matches_rule_pattern(
     // Predicate
     let p_ok = match &pattern.1 {
         Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
+            if let Some(&bound) = variable_bindings.get(v) {
                 bound == fact.predicate
             } else {
-                temp_bindings.insert(v.clone(), fact.predicate);
+                variable_bindings.insert(v.clone(), fact.predicate);
+                inserted.push(v.clone());
                 true
             }
         }
@@ -51,10 +55,11 @@ pub fn matches_rule_pattern(
     // Object
     let o_ok = match &pattern.2 {
         Term::Variable(v) => {
-            if let Some(&bound) = temp_bindings.get(v) {
+            if let Some(&bound) = variable_bindings.get(v) {
                 bound == fact.object
             } else {
-                temp_bindings.insert(v.clone(), fact.object);
+                variable_bindings.insert(v.clone(), fact.object);
+                inserted.push(v.clone());
                 true
             }
         }
@@ -64,9 +69,12 @@ pub fn matches_rule_pattern(
 
     // Only if ALL parts match, commit the bindings
     if s_ok && p_ok && o_ok {
-        *variable_bindings = temp_bindings;
+        // *variable_bindings = temp_bindings;
         true
     } else {
+        for v in inserted {
+            variable_bindings.remove(&v);
+        }
         false
     }
 }
@@ -107,7 +115,8 @@ fn join_remaining(
     let mut results = vec![binding];
     let n = rule.premise.len();
 
-    let difference: HashSet<Triple> = all_facts.iter().filter(|triple| !delta.contains(triple)).cloned().collect();
+    // let difference: HashSet<Triple> = all_facts.iter().filter(|triple| !delta.contains(triple)).cloned().collect();
+    // let difference = all_facts.difference(&delta);
 
     // For each other premise j (order can be arbitrary)
     for j in 0..n {
@@ -126,7 +135,7 @@ fn join_remaining(
                     }
                 }
             } else {
-                for fact in difference.iter() {
+                for fact in all_facts.difference(&delta) {
                     let mut b = partial_binding.clone();
                     if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
                         new_results.push(b);
