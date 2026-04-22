@@ -122,8 +122,8 @@ pub struct IMARSWindow {
     pub reasoner: Reasoner,
     pub width: usize,
     pub slide: usize,
-    pub timestamped_contents: BTreeSet<TimestampedTriple>,
-    index: HashMap<Triple, u64>,
+    pub timestamped_contents: BTreeSet<TimestampedTriple>, // used to store the timestamps in order for efficient removal of the oldest ones
+    index: HashMap<Triple, u64>, // used to look up timestamps efficiently in any order
     report: Report,
     tick: Tick,
     pub app_time: usize,
@@ -190,7 +190,7 @@ impl IMARSWindow {
             self.app_time = new_time;
         }
 
-        let now = self.app_time; // self.app_time.saturating_sub(self.width);
+        let now = self.app_time;
 
         // perform the IMaRS maintenance algorithm to add and remove triples
         self.maintenance(added_triples, now);
@@ -359,10 +359,8 @@ impl IMARSWindow {
             constructed = construct_triple(premise, binding, dict);
 
             // get the triples expiration timestamp
-            if let Some(timestamped_triple) = self.timestamped_contents.iter()
-                    .find(|timestamped_triple| timestamped_triple.triple == constructed)
-            {
-                min_timestamp = min(min_timestamp, timestamped_triple.timestamp);
+            if let Some(timestamp) = self.index.get(&constructed) {
+                min_timestamp = min(min_timestamp, *timestamp);
             }
         }
 
