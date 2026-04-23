@@ -11,6 +11,9 @@
 use crate::sparql_database::SparqlDatabase;
 use crate::streamertail_optimizer::*;
 use crate::error_handler::format_parse_error;
+use crate::neural_relations::{
+    execute_train_decl, materialize_neural_relations_for_patterns, register_neural_declarations,
+};
 use crate::parser::*;
 use shared::query::*;
 use shared::triple::Triple;
@@ -162,11 +165,11 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
     let mut prefixes;
     let limit_clause: Option<usize>;
 
-    let parse_result = parse_sparql_query(sparql);
+    let parse_result = parse_combined_query(sparql);
 
-    if let Ok((
-        _,
-        (
+    if let Ok((_, combined)) = parse_result
+    {
+        let (
             insert_clause,
             mut variables,
             patterns,
@@ -179,14 +182,43 @@ pub fn execute_query(sparql: &str, database: &mut SparqlDatabase) -> Vec<Vec<Str
             limit,
             _,
             order_conditions,
-        ),
-    )) = parse_result
-    {
-        prefixes = parsed_prefixes;
+        ) = combined.sparql;
+
+        prefixes = combined.prefixes.clone();
+        prefixes.extend(parsed_prefixes);
         limit_clause = limit;
+
+        register_neural_declarations(
+            database,
+            &prefixes,
+            &combined.model_decls,
+            &combined.neural_relation_decls,
+            &combined.train_neural_relation_decls,
+        );
+        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
+            .train_neural_relation_decls
+            .iter()
+            .filter_map(|decl| {
+                let normalized_pred = database.resolve_query_term(&decl.predicate, &prefixes);
+                database
+                    .train_neural_relation_decls
+                    .get(&normalized_pred)
+                    .cloned()
+            })
+            .collect();
+        for train_decl in &normalized_trains {
+            if let Err(err) = execute_train_decl(database, train_decl) {
+                eprintln!("Failed to execute TRAIN NEURAL RELATION: {}", err);
+                return Vec::new();
+            }
+        }
 
         // Ensure prefixes from the database are also available
         database.share_prefixes_with(&mut prefixes);
+        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes) {
+            eprintln!("Failed to materialize neural relations: {}", err);
+            return Vec::new();
+        }
 
         // Process the INSERT clause if present
         process_insert_clause(insert_clause, database);
@@ -350,11 +382,38 @@ pub fn execute_query_rayon_parallel2_volcano(
     // Register prefixes from the query string first
     database.register_prefixes_from_query(&sparql);
 
+    let combined_parse = parse_combined_query(&sparql);
+
     // Check for DELETE clause before the main SPARQL parse
-    if let Ok((_, combined)) = parse_combined_query(&sparql) {
+    if let Ok((_, combined)) = &combined_parse {
+        register_neural_declarations(
+            database,
+            &combined.prefixes,
+            &combined.model_decls,
+            &combined.neural_relation_decls,
+            &combined.train_neural_relation_decls,
+        );
+        let normalized_trains: Vec<TrainNeuralRelationDecl> = combined
+            .train_neural_relation_decls
+            .iter()
+            .filter_map(|decl| {
+                let normalized_pred = database.resolve_query_term(&decl.predicate, &combined.prefixes);
+                database
+                    .train_neural_relation_decls
+                    .get(&normalized_pred)
+                    .cloned()
+            })
+            .collect();
+        for train_decl in &normalized_trains {
+            if let Err(err) = execute_train_decl(database, train_decl) {
+                eprintln!("Failed to execute TRAIN NEURAL RELATION: {}", err);
+                return Vec::new();
+            }
+        }
+
         if combined.delete_clause.is_some() {
-            let delete_clause = combined.delete_clause;
-            let (insert_clause, _, patterns, _, _, _, _, _, _, _, _, _) = combined.sparql;
+            let delete_clause = combined.delete_clause.clone();
+            let (insert_clause, _, patterns, _, _, _, _, _, _, _, _, _) = combined.sparql.clone();
             if !patterns.is_empty() {
                 // DELETE { template } WHERE { patterns }
                 // First, execute the WHERE clause as a SELECT query to get bindings
@@ -428,11 +487,9 @@ pub fn execute_query_rayon_parallel2_volcano(
         }
     }
 
-    let parse_result = parse_sparql_query(sparql);
-
-    if let Ok((
-        _,
-        (
+    if let Ok((_, combined)) = combined_parse
+    {
+        let (
             insert_clause,
             mut variables,
             patterns,
@@ -445,11 +502,15 @@ pub fn execute_query_rayon_parallel2_volcano(
             limit,
             _,
             order_conditions,
-        ),
-    )) = parse_result
-    {
-        let mut prefixes = parsed_prefixes;
+        ) = combined.sparql;
+
+        let mut prefixes = combined.prefixes.clone();
+        prefixes.extend(parsed_prefixes);
         database.share_prefixes_with(&mut prefixes);
+        if let Err(err) = materialize_neural_relations_for_patterns(database, &patterns, &prefixes) {
+            eprintln!("Failed to materialize neural relations: {}", err);
+            return Vec::new();
+        }
 
         limit_clause = limit;
 
@@ -633,7 +694,14 @@ pub fn execute_query_rayon_parallel2_volcano(
                 logical_plan = LogicalOperator::join(logical_plan, subquery_plan);
             }
 
-            let stats = database.cached_stats.as_ref().expect("AAA");
+            if database.cached_stats.is_none() {
+                database.get_or_build_stats();
+            }
+            
+            let stats = database
+                .cached_stats
+                .as_ref()
+                .expect("database stats should be available");
             let mut optimizer = Streamertail::with_cached_stats(stats.clone());
 
             let optimized_plan = optimizer.find_best_plan(&logical_plan);
@@ -700,15 +768,13 @@ pub fn execute_query_rayon_parallel2_volcano(
 
             return format_results(final_results, &selected_variables);
         }
-    } else {
-        if let Err(err) = parse_result {
-            let error_message = format_parse_error(sparql, err);
-            eprintln!("{}", error_message);
-        } else {
-            eprintln! ("Failed to parse the query with an unknown error.");
-        }
+    } else if let Err(err) = combined_parse {
+        let error_message = format_parse_error(sparql, err);
+        eprintln!("Failed to parse the query: {}", error_message);
         return Vec::new();
     }
+
+    Vec::new()
 }
 
 // Convert the final BTreeMap results into Vec<Vec<String>>

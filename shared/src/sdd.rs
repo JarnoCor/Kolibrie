@@ -66,6 +66,18 @@ enum UniqueKey {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum BoolOp { And, Or }
 
+/// Whether a variable was registered as an independent Bernoulli or as a member
+/// of an exclusive (annotated-disjunction) group.
+///
+/// This determines the correct partial-derivative formula in `diff_sdd::wmc_gradient`:
+/// - Independent: `∂WMC/∂p = WMC(x=1) − WMC(x=0)` (neg weight = 1−p, both perturbed)
+/// - ExclusiveGroup: `∂WMC/∂p = WMC(x=1)` only (neg weight = 1.0, constant w.r.t. p)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VarKind {
+    Independent,
+    ExclusiveGroup(u32), // u32 = group_id
+}
+
 /// Arena-based SDD manager with unique table and apply cache.
 ///
 /// Owns the vtree, all SDD nodes, and probability assignments.
@@ -78,7 +90,14 @@ pub struct SddManager {
     vtree_nodes: Vec<VTreeNode>,
     vtree_root: Option<VTreeId>,
     var_to_vtree: HashMap<u32, VTreeId>,
-    prob_table: Vec<f64>,
+    /// Positive literal weight: `wmc(Literal(v, true)) = pos_weight[v]`
+    pos_weight: Vec<f64>,
+    /// Negative literal weight: `wmc(Literal(v, false)) = neg_weight[v]`
+    /// For Independent vars: 1.0 − pos_weight[v].
+    /// For ExclusiveGroup vars: 1.0 (annotated-disjunction encoding).
+    neg_weight: Vec<f64>,
+    /// Per-variable kind tag for gradient computation.
+    var_kind: Vec<VarKind>,
 }
 
 impl SddManager {
@@ -94,19 +113,32 @@ impl SddManager {
             vtree_nodes: Vec::new(),
             vtree_root: None,
             var_to_vtree: HashMap::new(),
-            prob_table: Vec::new(),
+            pos_weight: Vec::new(),
+            neg_weight: Vec::new(),
+            var_kind: Vec::new(),
         }
     }
 
     /// Ensure variable `var` exists in the vtree with probability `prob`.
+    /// Registers as Independent (neg_weight = 1 − prob).
     /// Extends the right-linear vtree if needed.
     pub fn ensure_variable(&mut self, var: u32, prob: f64) {
-        // Extend prob_table
+        let p = prob.clamp(0.0, 1.0);
+        self.ensure_variable_weights(var, p, 1.0 - p, VarKind::Independent);
+    }
+
+    /// Ensure variable `var` exists with explicit positive and negative literal weights.
+    /// Use `neg = 1.0` for exclusive-group variables (annotated-disjunction encoding).
+    pub fn ensure_variable_weights(&mut self, var: u32, pos: f64, neg: f64, kind: VarKind) {
         let id = var as usize;
-        if id >= self.prob_table.len() {
-            self.prob_table.resize(id + 1, 0.0);
+        if id >= self.pos_weight.len() {
+            self.pos_weight.resize(id + 1, 0.0);
+            self.neg_weight.resize(id + 1, 1.0);
+            self.var_kind.resize(id + 1, VarKind::Independent);
         }
-        self.prob_table[id] = prob.clamp(0.0, 1.0);
+        self.pos_weight[id] = pos.clamp(0.0, 1.0);
+        self.neg_weight[id] = neg.clamp(0.0, 1.0);
+        self.var_kind[id] = kind;
 
         // Already in vtree?
         if self.var_to_vtree.contains_key(&var) {
@@ -132,6 +164,62 @@ impl SddManager {
                 self.vtree_root = Some(internal_id);
             }
         }
+    }
+
+    /// Build the "exactly one of k" SDD formula for an exclusive group.
+    ///
+    /// Recursive: `exactly_one([v]) = lit(v, true)`
+    /// `exactly_one([v, rest..]) = (lit(v,true) AND all_false(rest)) OR (lit(v,false) AND exactly_one(rest))`
+    ///
+    /// All variables must already be registered via `ensure_variable_weights`.
+    pub fn exactly_one(&mut self, vars: &[u32]) -> SddId {
+        match vars {
+            [] => SddId::FALSE,
+            [v] => self.literal(*v, true),
+            [v, rest @ ..] => {
+                let lit_v_true = self.literal(*v, true);
+                let lit_v_false = self.literal(*v, false);
+                // all_false(rest): conjunction of lit(r, false) for each r in rest
+                let all_false = rest.iter().fold(SddId::TRUE, |acc, &r| {
+                    let lf = self.literal(r, false);
+                    self.apply(acc, lf, BoolOp::And)
+                });
+                let left_branch = self.apply(lit_v_true, all_false, BoolOp::And);
+                let rec = self.exactly_one(rest);
+                let right_branch = self.apply(lit_v_false, rec, BoolOp::And);
+                self.apply(left_branch, right_branch, BoolOp::Or)
+            }
+        }
+    }
+
+    // --- Public accessors for diff_sdd ---
+
+    /// Read access to positive literal weights.
+    pub fn pos_weight(&self) -> &[f64] { &self.pos_weight }
+
+    /// Read access to negative literal weights.
+    pub fn neg_weight(&self) -> &[f64] { &self.neg_weight }
+
+    /// Set the positive literal weight for variable `var`.
+    pub fn set_pos_weight(&mut self, var: u32, w: f64) {
+        let id = var as usize;
+        if id < self.pos_weight.len() { self.pos_weight[id] = w; }
+    }
+
+    /// Set the negative literal weight for variable `var`.
+    pub fn set_neg_weight(&mut self, var: u32, w: f64) {
+        let id = var as usize;
+        if id < self.neg_weight.len() { self.neg_weight[id] = w; }
+    }
+
+    /// Iterate over all registered variable IDs.
+    pub fn variable_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.var_to_vtree.keys().copied()
+    }
+
+    /// Get the kind tag for a variable.
+    pub fn var_kind(&self, var: u32) -> VarKind {
+        self.var_kind.get(var as usize).copied().unwrap_or(VarKind::Independent)
     }
 
     /// Which vtree node does this SDD node respect?
@@ -547,8 +635,12 @@ impl SddManager {
 
         let result = match &self.nodes[id.0 as usize] {
             SddNode::Literal { var, polarity } => {
-                let p = *self.prob_table.get(*var as usize).unwrap_or(&1.0);
-                if *polarity { p } else { 1.0 - p }
+                let idx = *var as usize;
+                if *polarity {
+                    *self.pos_weight.get(idx).unwrap_or(&1.0)
+                } else {
+                    *self.neg_weight.get(idx).unwrap_or(&0.0)
+                }
             }
             SddNode::Decision { elements, .. } => {
                 elements.iter().map(|&(prime, sub)| {
@@ -635,7 +727,8 @@ impl std::fmt::Debug for SddManager {
         f.debug_struct("SddManager")
             .field("node_count", &self.nodes.len())
             .field("vtree_nodes", &self.vtree_nodes.len())
-            .field("prob_table_len", &self.prob_table.len())
+            .field("pos_weight_len", &self.pos_weight.len())
+            .field("neg_weight_len", &self.neg_weight.len())
             .finish()
     }
 }
@@ -662,7 +755,7 @@ impl Provenance for SddProvenance {
 
     fn tag_from_probability(&self, prob: f64) -> SddId {
         let mut mgr = self.manager.lock().unwrap();
-        let var = mgr.prob_table.len() as u32;
+        let var = mgr.pos_weight.len() as u32;
         mgr.ensure_variable(var, prob);
         mgr.literal(var, true)
     }
@@ -934,5 +1027,34 @@ mod tests {
         let b = p.tag_from_probability_with_id(0.6, 1);
         assert!(p.is_saturated(&a, &a));
         assert!(!p.is_saturated(&a, &b));
+    }
+
+    #[test]
+    fn exactly_one_wmc() {
+        let mut mgr = SddManager::new();
+        mgr.ensure_variable_weights(0, 0.2, 1.0, VarKind::ExclusiveGroup(0));
+        mgr.ensure_variable_weights(1, 0.3, 1.0, VarKind::ExclusiveGroup(0));
+        mgr.ensure_variable_weights(2, 0.5, 1.0, VarKind::ExclusiveGroup(0));
+        let eo = mgr.exactly_one(&[0, 1, 2]);
+        assert!((mgr.wmc(eo) - 1.0).abs() < EPS);
+
+        let zero_lit = mgr.literal(0, true);
+        let only_zero = mgr.apply(zero_lit, eo, BoolOp::And);
+        assert!((mgr.wmc(only_zero) - 0.2).abs() < EPS);
+    }
+
+    #[test]
+    fn exclusive_mutual_exclusion() {
+        let mut mgr = SddManager::new();
+        mgr.ensure_variable_weights(0, 0.7, 1.0, VarKind::ExclusiveGroup(0));
+        mgr.ensure_variable_weights(1, 0.3, 1.0, VarKind::ExclusiveGroup(0));
+        let eo = mgr.exactly_one(&[0, 1]);
+        let left_lit = mgr.literal(0, true);
+        let right_lit = mgr.literal(1, true);
+        let left = mgr.apply(left_lit, eo, BoolOp::And);
+        let right = mgr.apply(right_lit, eo, BoolOp::And);
+        let both = mgr.apply(left, right, BoolOp::And);
+        assert_eq!(both, SddId::FALSE);
+        assert_eq!(mgr.wmc(both), 0.0);
     }
 }

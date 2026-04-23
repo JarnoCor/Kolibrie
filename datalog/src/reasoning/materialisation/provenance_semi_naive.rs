@@ -205,31 +205,40 @@ impl Reasoner {
         // Record sorted seed triples so encode_as_rdf_star_with_explanation can map IDs -> triples.
         tag_store.seed_triples = seeds.iter().map(|(t, _)| (*t).clone()).collect();
 
-        // Split rules into positive (stratum 0) and negated (stratum 1).
-        let positive_rules: Vec<Rule> = self.rules.iter()
-            .filter(|r| r.negative_premise.is_empty())
-            .cloned()
-            .collect();
-        let negative_rules: Vec<Rule> = self.rules.iter()
-            .filter(|r| !r.negative_premise.is_empty())
-            .cloned()
-            .collect();
-
-        // Stratum 0: run positive fixpoint.
-        let mut new_facts = self.infer_with_provenance_strategy_and_rules(
-            ProvenanceSemiNaiveStrategy { start_idx_for_delta: 0 },
-            &mut tag_store,
-            &positive_rules,
-        );
-
-        // Stratum 1: single negative pass (if any NAF rules exist).
-        if !negative_rules.is_empty() {
-            let neg_new = run_negative_stratum_pass(self, &negative_rules, &mut tag_store, &provenance);
-            new_facts.extend(neg_new);
-        }
-
-        (new_facts, tag_store)
+        let new_facts = semi_naive_with_initial_tags(self, provenance, tag_store.clone());
+        (new_facts.0, new_facts.1)
     }
+}
+
+pub fn semi_naive_with_initial_tags<P: Provenance>(
+    reasoner: &mut Reasoner,
+    provenance: P,
+    mut initial_tags: TagStore<P>,
+) -> (Vec<Triple>, TagStore<P>) {
+    // Split rules into positive (stratum 0) and negated (stratum 1).
+    let positive_rules: Vec<Rule> = reasoner.rules.iter()
+        .filter(|r| r.negative_premise.is_empty())
+        .cloned()
+        .collect();
+    let negative_rules: Vec<Rule> = reasoner.rules.iter()
+        .filter(|r| !r.negative_premise.is_empty())
+        .cloned()
+        .collect();
+
+    // Stratum 0: run positive fixpoint.
+    let mut new_facts = reasoner.infer_with_provenance_strategy_and_rules(
+        ProvenanceSemiNaiveStrategy { start_idx_for_delta: 0 },
+        &mut initial_tags,
+        &positive_rules,
+    );
+
+    // Stratum 1: single negative pass (if any NAF rules exist).
+    if !negative_rules.is_empty() {
+        let neg_new = run_negative_stratum_pass(reasoner, &negative_rules, &mut initial_tags, &provenance);
+        new_facts.extend(neg_new);
+    }
+
+    (new_facts, initial_tags)
 }
 
 /// Single forward pass for NAF rules (stratum 1) over the stratum-0 closure.

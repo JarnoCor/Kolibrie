@@ -9,11 +9,11 @@
  */
 
 use shared::dictionary::Dictionary;
+use shared::query::{FilterExpression, ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
 use crate::sliding_window::SlidingWindow;
 use shared::triple::TimestampedTriple;
 use shared::triple::Triple;
-use shared::query::FilterExpression;
 use crate::parser;
 use crate::utils;
 use crate::utils::current_timestamp;
@@ -55,6 +55,12 @@ pub struct SparqlDatabase {
     pub udfs: HashMap<String, ClonableFn>,
     pub index_manager: UnifiedIndex,
     pub rule_map: HashMap<String, String>,
+    pub model_decls: HashMap<String, ModelDecl>,
+    pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
+    pub train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
+    pub neural_model_artifacts: HashMap<String, String>,
+    pub neural_materialized_triples: HashMap<String, Vec<Triple>>,
+    pub probability_seeds: HashMap<Triple, f64>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
 }
@@ -71,6 +77,12 @@ impl SparqlDatabase {
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            model_decls: HashMap::new(),
+            neural_relation_decls: HashMap::new(),
+            train_neural_relation_decls: HashMap::new(),
+            neural_model_artifacts: HashMap::new(),
+            neural_materialized_triples: HashMap::new(),
+            probability_seeds: HashMap::new(),
             cached_stats: None,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
         }
@@ -239,6 +251,18 @@ impl SparqlDatabase {
             object: object_id,
         };
         self.add_triple(triple);
+    }
+
+    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+        let mut dict = self.dictionary.write().unwrap();
+        let s = dict.encode(subject);
+        let p = dict.encode(predicate);
+        let o = dict.encode(object);
+        drop(dict);
+
+        let triple = Triple { subject: s, predicate: p, object: o };
+        self.add_triple(triple.clone());
+        self.probability_seeds.insert(triple, probability);
     }
 
     /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
@@ -1918,7 +1942,13 @@ impl SparqlDatabase {
                 union_streams.push(re_encoded_ts_triple);
             }
         }
-        drop(other_dict);
+        let mut merged_seeds = self.probability_seeds.clone();
+        for (triple, prob) in &other.probability_seeds {
+            let subject = merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
+            let predicate = merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
+            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
+            merged_seeds.insert(Triple { subject, predicate, object }, *prob);
+        }
 
         Self {
             triples: union_triples,
@@ -1929,6 +1959,12 @@ impl SparqlDatabase {
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            model_decls: self.model_decls.clone(),
+            neural_relation_decls: self.neural_relation_decls.clone(),
+            train_neural_relation_decls: self.train_neural_relation_decls.clone(),
+            neural_model_artifacts: self.neural_model_artifacts.clone(),
+            neural_materialized_triples: self.neural_materialized_triples.clone(),
+            probability_seeds: merged_seeds,
             cached_stats: None,
             quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
@@ -2001,6 +2037,12 @@ impl SparqlDatabase {
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            model_decls: self.model_decls.clone(),
+            neural_relation_decls: self.neural_relation_decls.clone(),
+            train_neural_relation_decls: self.train_neural_relation_decls.clone(),
+            neural_model_artifacts: self.neural_model_artifacts.clone(),
+            neural_materialized_triples: self.neural_materialized_triples.clone(),
+            probability_seeds: HashMap::new(),
             cached_stats: None,
             quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
@@ -3750,4 +3792,3 @@ fn process_join_efficiently<'a>(
         }
     }
 }
-

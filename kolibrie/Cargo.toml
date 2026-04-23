@@ -281,6 +281,14 @@ name = "retrieve_rsp_multiple_window"
 path = "examples/sparql_syntax/rsp_ql_syntax/retrieve_multiple_window.rs"
 
 [[example]]
+name = "mnist_train"
+path = "examples/sparql_syntax/ml_train/mnist_train.rs"
+
+[[example]]
+name = "provenance_feedback_loop"
+path = "examples/sparql_syntax/ml_train/provenance_feedback_loop.rs"
+
+[[example]]
 name = "real_scenario"
 path = "examples/real_scenario/real_scenario.rs"
 

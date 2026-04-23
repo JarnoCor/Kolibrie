@@ -34,6 +34,24 @@
 33. Add `PROB(combination=sdd)` parser arm
 34. Rename `WmcProvenance` to `DnfWmcProvenance` with backward-compat type alias
 35. Add `pub mod sdd` to shared crate
+36. Add `SeedSpec`, `ExclusiveChoice`, and differentiable SDD utilities for neural fact seeding
+37. Extend `SddManager` with explicit negative weights, variable kinds, and `exactly_one` support
+38. Add neural training query structures: loss functions, optimizer kinds, and training clause metadata
+39. Add seeded SDD materialisation bridge and semi-naive inference with initial tags
+40. Add Candle-based CPU `MlpNeuralPredicate` with binary and categorical outputs
+41. Add ML feature loader for numeric training rows from SPARQL queries
+42. Add end-to-end neural training execution with exact SDD probabilities and gradient backpropagation
+43. Add parser support for first-class neural training and wire training into combined rule execution
+44. Add tests for exclusive SDD semantics, differentiable WMC gradients, feature loading, parser coverage, and end-to-end ML training
+45. Add first-class neurosymbolic syntax: `MODEL`, `NEURAL RELATION`, and `TRAIN NEURAL RELATION`
+46. Extend parser and query model to store neural declarations alongside `PREFIX`, `RULE`, and normal queries
+47. Add neural relation registry and model artifact tracking in `SparqlDatabase`
+48. Add runtime support to materialize neural relations as normal RDF predicates in `WHERE` and `RULE` patterns
+49. Keep `ML.PREDICT` compatibility lowering into the first-class neural relation path
+50. Add relation-driven training with `DATA { ... }` and fallback training with `QUERY { SELECT ... }`
+51. Rewrite MNIST neurosymbolic example to use the new first-class neural syntax
+52. Add parser and runtime tests for first-class neural syntax, `ML.PREDICT` alias lowering, and neural relation execution
+53. Remove the legacy public `ML.TRAIN(...)` compatibility syntax in favor of `TRAIN NEURAL RELATION`
 
 0.1.1
 1. Modify whole project by making Cargo workspace

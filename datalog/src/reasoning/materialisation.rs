@@ -10,6 +10,7 @@ pub mod semi_naive_parallel;
 pub mod semi_naive_with_repairs;
 pub mod provenance_infer_generic;
 pub mod provenance_semi_naive;
+pub mod sdd_seed_materialise;
 
 ///
 fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {
