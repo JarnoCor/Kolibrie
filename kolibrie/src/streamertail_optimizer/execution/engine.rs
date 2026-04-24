@@ -315,7 +315,7 @@ impl ExecutionEngine {
             } => {
                 // Execute the input operator first
                 let input_results = Self::execute_with_ids(input, database);
-                
+
                 if input_results.is_empty() {
                     return input_results;
                 }
@@ -325,6 +325,32 @@ impl ExecutionEngine {
                 println!("[ML.PREDICT] Input variables: {:?}", input_variables);
                 println!("[ML.PREDICT] Output variable: {}", output_variable);
                 println!("[ML.PREDICT] Input rows: {}", input_results.len());
+
+                // Try Candle first: when the model name maps to exactly one registered
+                // NEURAL RELATION, run the trained Candle MLP. Otherwise fall back to
+                // the legacy Python/sklearn path.
+                match crate::ml_predict_candle::try_candle_predict_by_model_name(
+                    database,
+                    model_name,
+                    &input_results,
+                ) {
+                    Ok(Some(dispatch)) => {
+                        println!("[ML.PREDICT] Dispatched to Candle (model={})", model_name);
+                        return Self::merge_candle_predictions(
+                            input_results,
+                            dispatch.predictions,
+                            output_variable,
+                            database,
+                        );
+                    }
+                    Ok(None) => {
+                        println!("[ML.PREDICT] No Candle registration for model '{}', falling back to Python", model_name);
+                    }
+                    Err(e) => {
+                        eprintln!("[ML.PREDICT] Candle dispatch error: {}", e);
+                        return input_results;
+                    }
+                }
 
                 // Extract input data for ML prediction
                 let input_data = Self::extract_ml_input_data(&input_results, input_variables, database);
@@ -481,6 +507,28 @@ impl ExecutionEngine {
             result.predictions.len() as f64 / elapsed.as_secs_f64());
         
         Ok(result)
+    }
+
+    /// Merges string-valued Candle predictions back into id-encoded query rows.
+    fn merge_candle_predictions(
+        mut input_results: Vec<HashMap<String, u32>>,
+        predictions: Vec<String>,
+        output_variable: &str,
+        database: &mut SparqlDatabase,
+    ) -> Vec<HashMap<String, u32>> {
+        let output_var = output_variable.strip_prefix('?').unwrap_or(output_variable);
+
+        let mut dict = database.dictionary.write().unwrap();
+        for (i, prediction) in predictions.iter().enumerate() {
+            if i < input_results.len() {
+                let prediction_id = dict.encode(prediction);
+                input_results[i].insert(output_var.to_string(), prediction_id);
+            }
+        }
+        drop(dict);
+
+        println!("[ML.PREDICT] Candle: merged {} predictions", predictions.len());
+        input_results
     }
 
     /// Merges ML predictions back into query results

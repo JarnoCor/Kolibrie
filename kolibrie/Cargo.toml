@@ -289,6 +289,10 @@ name = "provenance_feedback_loop"
 path = "examples/sparql_syntax/ml_train/provenance_feedback_loop.rs"
 
 [[example]]
+name = "predict_after_train"
+path = "examples/sparql_syntax/ml_train/predict_after_train.rs"
+
+[[example]]
 name = "real_scenario"
 path = "examples/real_scenario/real_scenario.rs"
 

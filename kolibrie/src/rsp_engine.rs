@@ -9,7 +9,8 @@
 
 use crate::rsp::r2r::R2ROperator;
 use crate::rsp::r2s::Relation2StreamOperator;
-use crate::rsp::s2r::{CSPARQLWindow, ContentContainer, Report, ReportStrategy, Tick};
+use crate::rsp::s2r::{ContentContainer, ReportStrategy, Tick};
+use crate::rsp::window_runner::{WindowRunner, WindowSpec};
 
 #[cfg(not(test))]
 use log::{debug, error}; // Use log crate when building application
@@ -170,7 +171,7 @@ where
     I: Eq + PartialEq + Clone + Debug + Hash + Send,
     O: Hash,
 {
-    windows: Vec<CSPARQLWindow<I>>,
+    windows: Vec<WindowRunner<I>>,
     r2r: Arc<Mutex<Box<dyn R2ROperator<I, Vec<PhysicalOperator>, O>>>>,
     r2s_consumer: ResultConsumer<O>,
     window_configs: Vec<RSPWindow>,
@@ -283,16 +284,13 @@ where
         // Create windows based on parsed configuration
         let mut windows = Vec::new();
         for window_config in &query_config.windows {
-            let mut report = Report::new();
-            report.add(window_config.report_strategy.clone());
-            let window = CSPARQLWindow::new(
-                window_config.width,
-                window_config.slide,
-                report,
-                window_config.tick.clone(),
-                window_config.window_iri.clone(),
-            );
-            windows.push(window);
+            let spec = WindowSpec {
+                width: window_config.width,
+                slide: window_config.slide,
+                report_strategies: vec![window_config.report_strategy.clone()],
+                tick: window_config.tick.clone(),
+            };
+            windows.push(WindowRunner::new(spec, window_config.window_iri.clone()));
         }
 
         // Create channel for cross-window result coordination

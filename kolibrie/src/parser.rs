@@ -2470,11 +2470,26 @@ pub fn process_rule_definition(
             execute_train_decl(database, train_decl).map_err(|err| err.to_string())?;
         }
 
-        let rule = combined
+        let mut rule = combined
             .rule
             .ok_or_else(|| "Failed to parse rule definition".to_string())?;
 
         materialize_neural_relations_for_patterns(database, &rule.body.0, &rule_prefixes)?;
+
+        // Execute ML.PREDICT (if present) before converting the rule: Candle-first
+        // dispatch for registered NEURAL RELATION predicates, Python fallback otherwise.
+        // Materializes conclusion triples that reference the ML output variable and strips
+        // those conclusion templates from the rule so the Datalog pass doesn't try to bind
+        // the output variable itself.
+        if let Some(ml_predict) = rule.ml_predict.clone() {
+            crate::ml_predict_runtime::execute_ml_predict_clause(
+                &ml_predict,
+                &mut rule,
+                database,
+                &rule_prefixes,
+            )
+            .map_err(|err| err.to_string())?;
+        }
 
         let mut kg = Reasoner::new();
         kg.dictionary = database.dictionary.clone();

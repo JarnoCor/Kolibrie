@@ -305,14 +305,14 @@ pub fn execute_neural_program(
     Ok(())
 }
 
-fn model_output_type(model_decl: &ModelDecl) -> OutputType {
+pub(crate) fn model_output_type(model_decl: &ModelDecl) -> OutputType {
     match &model_decl.output_kind {
         NeuralOutputKind::Exclusive { labels } => OutputType::Categorical(labels.len()),
         NeuralOutputKind::Binary { .. } => OutputType::Binary,
     }
 }
 
-fn model_hidden_layers(model_decl: &ModelDecl) -> &[usize] {
+pub(crate) fn model_hidden_layers(model_decl: &ModelDecl) -> &[usize] {
     match &model_decl.arch {
         ModelArch::Mlp { hidden_layers } => hidden_layers,
     }

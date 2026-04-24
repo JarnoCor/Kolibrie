@@ -52,6 +52,8 @@
 51. Rewrite MNIST neurosymbolic example to use the new first-class neural syntax
 52. Add parser and runtime tests for first-class neural syntax, `ML.PREDICT` alias lowering, and neural relation execution
 53. Remove the legacy public `ML.TRAIN(...)` compatibility syntax in favor of `TRAIN NEURAL RELATION`
+54. Extend `ML.PREDICT` with Candle-backed execution for models trained via `TRAIN NEURAL RELATION`, automatic rule-time materialization of ML outputs, Python fallback for legacy models, and probability companion facts for binary predictions
+55. Small refactor of SparqlDatabase
 
 0.1.1
 1. Modify whole project by making Cargo workspace

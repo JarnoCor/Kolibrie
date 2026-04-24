@@ -73,6 +73,7 @@ kolibrie/src/cuda/*.dll
 # .vscode
 .vscode
 .codex
+.claude
 
 # build
 build/
