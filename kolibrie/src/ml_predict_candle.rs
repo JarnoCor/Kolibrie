@@ -8,22 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Candle dispatch for `ML.PREDICT`.
-//!
-//! Invariants required for Candle auto-dispatch:
-//! - The rule's ML conclusion triple uses the output variable in **object position**.
-//! - The normalized predicate of that conclusion triple is registered as a
-//!   `NEURAL RELATION` in `database.neural_relation_decls`.
-//! - The `MODEL "<name>"` in the `ML.PREDICT` clause matches the relation's
-//!   `model_name`.
-//! - The relation's `model_name` has an artifact path in
-//!   `database.neural_model_artifacts` (produced by `TRAIN NEURAL RELATION`).
-//!
-//! When any invariant is unmet in a recoverable way (missing relation), the
-//! function returns `Ok(None)` so the caller can fall back to Python. When the
-//! invariants look "intended but broken" (model-name mismatch, missing
-//! artifact), it returns `Err(_)` to surface the misconfiguration.
-
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -35,8 +19,7 @@ use crate::sparql_database::SparqlDatabase;
 
 type CandleResult<T> = Result<T, Box<dyn Error>>;
 
-/// Result of a successful Candle `ML.PREDICT` dispatch. Lengths of
-/// `predictions` and `probabilities` equal `input_rows.len()` (positional).
+/// Successful Candle `ML.PREDICT` dispatch with row-aligned outputs
 pub struct CandleDispatch {
     pub predictions: Vec<String>,
     pub probabilities: Vec<f64>,
@@ -45,10 +28,7 @@ pub struct CandleDispatch {
     pub relation: NeuralRelationDecl,
 }
 
-/// Attempt to dispatch an `ML.PREDICT` clause to Candle. See module docs for
-/// invariants. `conclusion` is the rule's CONSTRUCT triple templates; we look
-/// up the one whose object slot is `ml_predict.output` to find the target
-/// predicate.
+/// Try Candle for an `ML.PREDICT` clause and resolve the target predicate
 pub fn try_candle_predict(
     database: &mut SparqlDatabase,
     ml_predict: &MLPredictClause<'_>,
@@ -58,21 +38,20 @@ pub fn try_candle_predict(
 ) -> CandleResult<Option<CandleDispatch>> {
     let output_var = ml_predict.output.trim_start_matches('?');
 
-    // Step 1–2: find the conclusion triple whose object slot is the ML output
-    // variable, then normalize its predicate.
+    // Find the ML output predicate from the conclusion template
     let predicate_raw = match find_object_position_predicate(conclusion, output_var) {
         Some(p) => p,
         None => return Ok(None),
     };
     let normalized_predicate = database.resolve_query_term(predicate_raw, rule_prefixes);
 
-    // Step 3: registry lookup. Missing relation → Python fallback.
+    // Use Python fallback when the relation is not registered
     let relation = match database.neural_relation_decls.get(&normalized_predicate) {
         Some(r) => r.clone(),
         None => return Ok(None),
     };
 
-    // Step 4: model decl must exist.
+    // Require a MODEL declaration
     let model_decl = database
         .model_decls
         .get(&relation.model_name)
@@ -84,7 +63,7 @@ pub fn try_candle_predict(
             )
         })?;
 
-    // Step 5: the MODEL "..." in the ML.PREDICT clause must name the same model.
+    // Check that ML.PREDICT names the registered model
     if relation.model_name != ml_predict.model {
         return Err(format!(
             "ML.PREDICT names model \"{}\" but NEURAL RELATION for <{}> uses model \"{}\"",
@@ -93,7 +72,7 @@ pub fn try_candle_predict(
         .into());
     }
 
-    // Step 6: trained artifact must exist.
+    // Require a trained artifact
     let artifact_path = database
         .neural_model_artifacts
         .get(&relation.model_name)
@@ -105,10 +84,10 @@ pub fn try_candle_predict(
             )
         })?;
 
-    // Step 7: build per-row feature vectors from registered feature_vars.
+    // Build features from the registered feature vars
     let features = build_features_for_rows(database, &relation, input_rows)?;
 
-    // Step 8: load the trained Candle model and run forward.
+    // Load the model and run inference
     let output_type: OutputType = model_output_type(&model_decl);
     let hidden = model_hidden_layers(&model_decl);
     let model = MlpNeuralPredicate::load(
@@ -125,7 +104,7 @@ pub fn try_candle_predict(
         probs
     };
 
-    // Step 9: map per row to predicted label + probability.
+    // Map probabilities to labels
     let (predictions, probabilities) = map_probs_to_labels(&probs, &model_decl.output_kind);
 
     Ok(Some(CandleDispatch {
@@ -137,16 +116,15 @@ pub fn try_candle_predict(
     }))
 }
 
-/// Resolve by model name alone — used by the physical operator runtime path,
-/// which lacks conclusion context. Requires exactly one `NeuralRelationDecl`
-/// bound to this model name; otherwise returns `Ok(None)` and the caller
-/// falls back to the Python path.
+/// Resolve by model name for the physical operator runtime path
+///
+/// Requires exactly one relation for the model, otherwise callers fall back to Python
 pub fn try_candle_predict_by_model_name(
     database: &mut SparqlDatabase,
     model_name: &str,
     input_rows: &[HashMap<String, u32>],
 ) -> CandleResult<Option<CandleDispatch>> {
-    // Find the unique relation for this model name.
+    // Find the relation bound to this model name
     let matching: Vec<&NeuralRelationDecl> = database
         .neural_relation_decls
         .values()

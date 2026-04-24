@@ -8,10 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Orchestration of `ML.PREDICT`: runs the INPUT query, dispatches to Candle
-//! (if the output predicate is registered) or Python, then materializes the
-//! conclusion triples. The same materialization runs for both backends.
-
 use std::collections::HashMap;
 use std::error::Error;
 
@@ -24,8 +20,7 @@ use crate::sparql_database::SparqlDatabase;
 
 type MlResult<T> = Result<T, Box<dyn Error>>;
 
-/// A single predicted row: the original INPUT-query bindings plus the
-/// prediction as a decoded string label.
+/// Predicted row with original INPUT bindings and decoded output
 pub struct PredictedRow {
     pub bindings: HashMap<String, u32>,
     pub prediction_literal: String,
@@ -35,14 +30,13 @@ pub struct PredictedRow {
 pub(crate) struct MlConclusionMeta {
     pub normalized_predicate: String,
     pub cache_key: String,
-    /// Indices into `rule.conclusion` of triples that reference the ML output var.
+    /// Indices of conclusion triples that reference the ML output var
     pub ml_conclusion_indices: Vec<usize>,
 }
 
-/// Resolves metadata for `ML.PREDICT` conclusion handling. Enforces:
-/// - output-variable-in-object-position (v1 scope);
-/// - single-predicate invariant;
-/// - unused-output-variable error.
+/// Resolve metadata for `ML.PREDICT` conclusion handling
+///
+/// Checks output position, single-predicate use, and referenced output vars
 pub(crate) fn resolve_ml_conclusion_metadata(
     rule: &CombinedRule<'_>,
     ml_output_var: &str,
@@ -111,9 +105,7 @@ pub(crate) fn resolve_ml_conclusion_metadata(
     })
 }
 
-/// Primary entry point. Executes the ML.PREDICT clause associated with
-/// `rule` against `database`, mutating `rule.conclusion` to strip the ML
-/// triples after materialization.
+/// Execute `ML.PREDICT` and materialize its conclusion triples
 pub fn execute_ml_predict_clause<'a>(
     ml_predict: &MLPredictClause<'_>,
     rule: &mut CombinedRule<'a>,
@@ -123,10 +115,10 @@ pub fn execute_ml_predict_clause<'a>(
     let out_var = ml_predict.output;
     let meta = resolve_ml_conclusion_metadata(rule, out_var, rule_prefixes, database)?;
 
-    // Step 1: run the INPUT query id-natively.
+    // Run the INPUT query with native ids
     let input_rows = run_input_query(ml_predict.input_raw, database, rule_prefixes)?;
 
-    // Empty-input rule: still clean up and strip.
+    // Clean up and strip ML templates even with no input
     if input_rows.is_empty() {
         purge_previous_materialization(database, &meta.cache_key);
         strip_ml_conclusions(rule, out_var);
@@ -136,7 +128,7 @@ pub fn execute_ml_predict_clause<'a>(
         return Ok(Vec::new());
     }
 
-    // Step 2: try Candle.
+    // Try Candle first
     let candle = try_candle_predict(
         database,
         ml_predict,
@@ -154,7 +146,7 @@ pub fn execute_ml_predict_clause<'a>(
             (dispatch.predictions, dispatch.probabilities, emit_prob)
         }
         None => {
-            // Step 3: Python fallback.
+            // Fall back to Python
             let preds = run_python_ml_dispatch(
                 database,
                 ml_predict.model,
@@ -194,7 +186,7 @@ pub fn execute_ml_predict_clause<'a>(
         None
     };
 
-    // Step 4: shared materialization.
+    // Materialize shared ML conclusions
     let inserted = materialize_ml_conclusions(
         database,
         out_var,
@@ -210,7 +202,7 @@ pub fn execute_ml_predict_clause<'a>(
     Ok(inserted)
 }
 
-/// Run the INPUT query via the optimizer and return id-encoded rows.
+/// Run the INPUT query through the optimizer and return id-encoded rows
 fn run_input_query(
     input_raw: &str,
     database: &mut SparqlDatabase,
@@ -241,7 +233,7 @@ fn run_input_query(
         .collect())
 }
 
-/// Remove previously-materialized triples for this cache key, if any.
+/// Remove old materialized triples for this cache key
 fn purge_previous_materialization(database: &mut SparqlDatabase, cache_key: &str) {
     if let Some(old) = database.ml_predict_materialized_triples.remove(cache_key) {
         for triple in old {
@@ -250,7 +242,7 @@ fn purge_previous_materialization(database: &mut SparqlDatabase, cache_key: &str
     }
 }
 
-/// Strip conclusion triples that reference the ML output variable in place.
+/// Strip ML conclusion triples from the rule
 fn strip_ml_conclusions<'a>(rule: &mut CombinedRule<'a>, ml_output_var: &str) {
     let out_stripped = ml_output_var.trim_start_matches('?');
     rule.conclusion.retain(|(s, p, o)| {
@@ -259,8 +251,7 @@ fn strip_ml_conclusions<'a>(rule: &mut CombinedRule<'a>, ml_output_var: &str) {
     });
 }
 
-/// Backend-agnostic materialization step. Inserts conclusion triples for every
-/// predicted row and strips those conclusion templates from the rule.
+/// Materialize predictions and strip consumed conclusion templates
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_ml_conclusions<'a>(
     database: &mut SparqlDatabase,
@@ -275,8 +266,7 @@ pub fn materialize_ml_conclusions<'a>(
 ) -> MlResult<Vec<Triple>> {
     let out_stripped = ml_output_var.trim_start_matches('?');
 
-    // Bindings-coverage invariant: check every non-ML variable appearing in
-    // any ML conclusion template is present in the first row's bindings.
+    // Check all non-ML variables in ML templates exist in row bindings
     if let Some(first_row) = predicted_rows.first() {
         let row_keys = &first_row.bindings;
         for &idx in ml_conclusion_indices {
@@ -300,11 +290,10 @@ pub fn materialize_ml_conclusions<'a>(
         }
     }
 
-    // Cleanup stale materialization for this cache key.
+    // Remove stale materialization for this cache key
     purge_previous_materialization(database, cache_key);
 
-    // Collect ML conclusion templates as owned strings so we don't need to
-    // hold borrows while mutating the database.
+    // Copy ML templates before mutating the database
     let ml_templates: Vec<(String, String, String)> = ml_conclusion_indices
         .iter()
         .map(|&idx| {
@@ -326,11 +315,11 @@ pub fn materialize_ml_conclusions<'a>(
             inserted.push(triple);
         }
 
-        // Companion probability triple when requested.
+        // Add the companion probability triple when requested
         if let Some(prob_var_name) = prob_var {
             let prob_value = row.probability.unwrap_or(0.0);
             let companion_predicate = format!("{}_prob", normalized_predicate);
-            // Determine the anchor subject from the first ML conclusion template.
+            // Use the first ML conclusion subject as the probability anchor
             if let Some((s_tmpl, _, _)) = ml_templates.first() {
                 let subject = substitute_slot(s_tmpl, out_stripped, row, database, rule_prefixes)?;
                 let triple = encode_triple(
@@ -346,12 +335,12 @@ pub fn materialize_ml_conclusions<'a>(
         }
     }
 
-    // Track for rerun cleanup.
+    // Track triples for rerun cleanup
     database
         .ml_predict_materialized_triples
         .insert(cache_key.to_string(), inserted.clone());
 
-    // Strip ML conclusion templates from the rule.
+    // Strip ML templates from the rule
     conclusion.retain(|(s, p, o)| {
         let matches = |slot: &str| slot.starts_with('?') && slot.trim_start_matches('?') == out_stripped;
         !(matches(s) || matches(p) || matches(o))
@@ -396,8 +385,7 @@ fn encode_triple(database: &mut SparqlDatabase, subject: &str, predicate: &str, 
     }
 }
 
-/// Python fallback dispatch. Runs the existing `MLHandler` machinery in an
-/// id-native way and returns one decoded prediction per row.
+/// Run the existing Python MLHandler path and return decoded predictions
 pub(crate) fn run_python_ml_dispatch(
     database: &SparqlDatabase,
     model: &str,
@@ -470,9 +458,7 @@ pub(crate) fn run_python_ml_dispatch(
     Ok(result.predictions.iter().map(f64::to_string).collect())
 }
 
-/// Shared helper used by both the Python fallback and the runtime operator:
-/// pick only those variables whose first-row value parses as f64 and return
-/// `Vec<Vec<f64>>` aligned with `input_rows`.
+/// Pick numeric INPUT variables and return rows aligned with `input_rows`
 pub(crate) fn filter_numeric_features(
     input_rows: &[HashMap<String, u32>],
     input_variables: &[String],

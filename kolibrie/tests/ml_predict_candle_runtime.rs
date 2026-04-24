@@ -8,9 +8,6 @@
  * you can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-//! Integration tests for Candle-backed `ML.PREDICT` going through the full
-//! `process_rule_definition` runtime path.
-
 use kolibrie::parser::process_rule_definition;
 use kolibrie::sparql_database::SparqlDatabase;
 
@@ -135,7 +132,7 @@ TRAIN NEURAL RELATION ex:isFraud {{
     clear_materialized_predicate(db, "http://example.org/isFraud");
 }
 
-/// Returns the decoded object for the first triple matching (subject, predicate).
+/// Decode the first object for a matching subject and predicate
 fn lookup_object(db: &SparqlDatabase, subject_iri: &str, predicate_iri: &str) -> Option<String> {
     let dict = db.dictionary.read().unwrap();
     let s = *dict.string_to_id.get(subject_iri)?;
@@ -154,8 +151,7 @@ fn count_triples_with_predicate(db: &SparqlDatabase, predicate_iri: &str) -> usi
     db.triples.iter().filter(|t| t.predicate == pred_id).count()
 }
 
-/// Test 1: head-only rule (fraud-style). `?label` is only in CONSTRUCT; WHERE
-/// binds only `?sample`. Assert predictions get materialized.
+/// Head-only output variable materializes predictions
 #[test]
 fn head_only_output_variable_materializes() {
     let mut db = SparqlDatabase::new();
@@ -202,7 +198,7 @@ ML.PREDICT(MODEL "digit_model",
     }
 }
 
-/// Test 3: INPUT FILTER preserved — only rows with x0 > 0 get predictions.
+/// INPUT FILTER only predicts rows with x0 > 0
 #[test]
 fn input_filter_preserved() {
     let mut db = SparqlDatabase::new();
@@ -234,15 +230,15 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    // Only s0, s1 have x0 > 0, so exactly two predictedDigit triples should exist.
+    // Only s0 and s1 have x0 > 0
     let count = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
     assert_eq!(count, 2, "FILTER did not restrict predictions correctly");
 
-    // And the filtered-out sample has no prediction.
+    // Filtered-out sample has no prediction
     assert!(lookup_object(&db, "s2", "http://example.org/predictedDigit").is_none());
 }
 
-/// Test 4 + 14: binary always-emit contract + companion `_prob` IRI.
+/// Binary output emits every row and adds the `_prob` companion
 #[test]
 fn binary_always_emit_with_probability_companion() {
     let mut db = SparqlDatabase::new();
@@ -272,15 +268,15 @@ ML.PREDICT(MODEL "fraud_model",
 "#;
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    // Every row, positive and negative, gets `isFraud true` (new ML.PREDICT contract).
+    // Every positive and negative row gets `isFraud true`
     let fraud_count = count_triples_with_predicate(&db, "http://example.org/isFraud");
     assert_eq!(fraud_count, 4, "binary ML.PREDICT should emit for every row");
 
-    // Companion probability predicate (locked IRI rule: append _prob to full IRI).
+    // Companion probability predicate appends _prob to the full IRI
     let prob_count = count_triples_with_predicate(&db, "http://example.org/isFraud_prob");
     assert_eq!(prob_count, 4);
 
-    // The probability for the positive training rows should be higher than for negatives.
+    // Positive rows should score higher than negatives
     let prob_pos = lookup_object(&db, "t0", "http://example.org/isFraud_prob")
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap();
@@ -295,8 +291,7 @@ ML.PREDICT(MODEL "fraud_model",
     );
 }
 
-/// Test 6: Rerun cleanup. Train once, run ML.PREDICT, change one feature row,
-/// rerun the rule with new data — old prediction should be gone.
+/// Rerun cleans stale predictions after feature changes
 #[test]
 fn rerun_cleans_stale_predictions() {
     let mut db = SparqlDatabase::new();
@@ -329,7 +324,7 @@ ML.PREDICT(MODEL "digit_model",
     let after_first = count_triples_with_predicate(&db, "http://example.org/predictedDigit");
     assert_eq!(after_first, 6);
 
-    // Flip s0's feature values so it now looks like a C.
+    // Flip s0's features so it now looks like C
     db.delete_triple_parts("s0", "http://example.org/x0", "1");
     db.delete_triple_parts("s0", "http://example.org/x1", "0");
     db.delete_triple_parts("s0", "http://example.org/x2", "0");
@@ -344,7 +339,7 @@ ML.PREDICT(MODEL "digit_model",
         "rerun should replace triples, not accumulate them"
     );
 
-    // s0 should now predict C.
+    // s0 should now predict C
     assert_eq!(
         lookup_object(&db, "s0", "http://example.org/predictedDigit").as_deref(),
         Some("C"),
@@ -352,8 +347,7 @@ ML.PREDICT(MODEL "digit_model",
     );
 }
 
-/// Test 11: Preserves non-ML conclusions. CONSTRUCT has both an ML triple and
-/// a static one. Both should appear after execution.
+/// Non-ML conclusions survive ML materialization
 #[test]
 fn preserves_non_ml_conclusions() {
     let mut db = SparqlDatabase::new();
@@ -385,14 +379,13 @@ ML.PREDICT(MODEL "digit_model",
 "#;
     process_rule_definition(rule, &mut db).expect("rule processing failed");
 
-    // ML triple from side-effect:
+    // ML side-effect triple
     assert!(lookup_object(&db, "s0", "http://example.org/predictedDigit").is_some());
-    // Static triple from Datalog:
+    // Static Datalog triple
     assert!(lookup_object(&db, "s0", "http://example.org/alert").is_some());
 }
 
-/// Test 15: Empty INPUT rerun clears stale predictions. Run 1 materializes
-/// triples; remove input data; run 2 should remove all prior triples.
+/// Empty INPUT rerun clears stale predictions
 #[test]
 fn empty_input_rerun_clears_stale() {
     let mut db = SparqlDatabase::new();
@@ -424,7 +417,7 @@ ML.PREDICT(MODEL "digit_model",
     process_rule_definition(rule, &mut db).expect("first run failed");
     assert!(count_triples_with_predicate(&db, "http://example.org/predictedDigit") > 0);
 
-    // Scrub ALL the feature triples so INPUT returns zero rows.
+    // Remove all feature triples so INPUT returns no rows
     let subjects: Vec<&'static str> = vec!["s0", "s1", "s2", "s3", "s4", "s5"];
     for s in subjects {
         for (pred, val) in [
@@ -447,7 +440,7 @@ ML.PREDICT(MODEL "digit_model",
     );
 }
 
-/// Test 16: Unused OUTPUT variable. Rule conclusion does not reference `?label`.
+/// Unused OUTPUT variable returns an error
 #[test]
 fn unused_output_variable_errors() {
     let mut db = SparqlDatabase::new();
@@ -489,8 +482,7 @@ ML.PREDICT(MODEL "digit_model",
     }
 }
 
-/// Test 10: Model-name mismatch. The rule names a different MODEL string than
-/// what the registered NEURAL RELATION uses.
+/// Model-name mismatch returns an error
 #[test]
 fn model_name_mismatch_errors() {
     let mut db = SparqlDatabase::new();
@@ -532,7 +524,7 @@ ML.PREDICT(MODEL "other_model",
     }
 }
 
-/// Test 12: Missing anchor in INPUT SELECT.
+/// Missing INPUT SELECT anchor returns an error
 #[test]
 fn missing_anchor_in_input_select_errors() {
     let mut db = SparqlDatabase::new();
@@ -574,7 +566,7 @@ ML.PREDICT(MODEL "digit_model",
     }
 }
 
-/// Test 13: Multiple conclusion predicates for one OUTPUT ?var.
+/// Multiple predicates for one OUTPUT variable return an error
 #[test]
 fn multiple_conclusion_predicates_errors() {
     let mut db = SparqlDatabase::new();
