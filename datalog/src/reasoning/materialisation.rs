@@ -11,6 +11,8 @@ pub mod semi_naive_with_repairs;
 pub mod provenance_infer_generic;
 pub mod provenance_semi_naive;
 pub mod sdd_seed_materialise;
+pub mod cross_window_naive;
+pub mod cross_window_incremental;
 
 ///
 fn get_id_from_term(term: &Term, vars: &HashMap<String, u32>) -> u32 {

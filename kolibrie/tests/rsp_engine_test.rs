@@ -859,6 +859,164 @@ fn rsp_ql_multi_window_static_join() {
     );
 }
 
+fn make_cross_window_query() -> &'static str {
+    r#"
+        REGISTER RSTREAM <http://out/stream> AS
+        SELECT *
+        FROM NAMED WINDOW :wind1 ON :stream1 [RANGE 10 STEP 10]
+        FROM NAMED WINDOW :wind2 ON :stream2 [RANGE 10 STEP 10]
+        WHERE {
+            WINDOW :wind1 {
+                ?sensor <http://test/hotspot> ?room .
+            }
+            WINDOW :wind2 {
+                ?sensor <http://test/location> ?room .
+            }
+        }
+    "#
+}
+
+fn make_cross_window_rules() -> &'static str {
+    r#"
+{ ?sensor <:wind1http://test/reading> ?value .
+  ?sensor <:wind2http://test/location> ?room }
+=> { ?sensor <:wind1http://test/hotspot> ?room }
+    "#
+}
+
+fn cross_window_result_engine(
+    with_rules: bool,
+) -> (
+    RSPEngine<Triple, Vec<(String, String)>>,
+    Arc<Mutex<Vec<Vec<(String, String)>>>>,
+) {
+    let result_container = Arc::new(Mutex::new(Vec::new()));
+    let result_container_clone = Arc::clone(&result_container);
+    let function = Box::new(move |r: Vec<(String, String)>| {
+        result_container_clone.lock().unwrap().push(r);
+    });
+    let result_consumer = ResultConsumer {
+        function: Arc::new(function),
+    };
+    let r2r = Box::new(SimpleR2R::with_execution_mode(QueryExecutionMode::Volcano));
+
+    let builder = RSPBuilder::new()
+        .add_rsp_ql_query(make_cross_window_query())
+        .add_consumer(result_consumer)
+        .add_r2r(r2r)
+        .set_operation_mode(OperationMode::SingleThread);
+
+    let builder = if with_rules {
+        builder.add_cross_window_rules(make_cross_window_rules())
+    } else {
+        builder
+    };
+
+    let engine = builder
+        .build()
+        .expect("Failed to build cross-window RSP engine");
+    (engine, result_container)
+}
+
+#[test]
+fn rsp_cross_window_rule_derives_queryable_fact() {
+    let (mut engine, results) = cross_window_result_engine(true);
+
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/reading> \"25\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 1);
+    }
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 2);
+    }
+
+    engine.stop();
+
+    let results = results.lock().unwrap();
+    assert!(
+        results.iter().any(|row| {
+            row.iter()
+                .any(|(k, v)| k == "sensor" && v.contains("sensorA"))
+                && row.iter().any(|(k, v)| k == "room" && v.contains("room1"))
+        }),
+        "cross-window SDS+ rule should derive hotspot visible to the window query; got {:?}",
+        *results
+    );
+}
+
+#[test]
+fn rsp_cross_window_without_rules_produces_no_derived_result() {
+    let (mut engine, results) = cross_window_result_engine(false);
+
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/reading> \"25\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 1);
+    }
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 2);
+    }
+
+    engine.stop();
+
+    assert!(
+        results.lock().unwrap().is_empty(),
+        "without cross-window rules there should be no hotspot result"
+    );
+}
+
+#[test]
+fn rsp_cross_window_expired_support_no_longer_emits() {
+    let (mut engine, results) = cross_window_result_engine(true);
+
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/reading> \"25\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 1);
+    }
+    for triple in engine.parse_data(
+        "<http://test/sensorA> <http://test/location> <http://test/room1> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 2);
+    }
+
+    for triple in engine.parse_data(
+        "<http://test/otherSensor> <http://test/reading> \"10\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 15);
+    }
+    for triple in engine.parse_data(
+        "<http://test/otherSensor> <http://test/location> <http://test/room2> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 15);
+    }
+    engine.process_single_thread_window_results();
+    results.lock().unwrap().clear();
+
+    for triple in engine.parse_data(
+        "<http://test/noReadingJoin> <http://test/reading> \"10\" .",
+    ) {
+        engine.add_to_stream("stream1", triple, 25);
+    }
+    for triple in engine.parse_data(
+        "<http://test/noLocationJoin> <http://test/location> <http://test/room3> .",
+    ) {
+        engine.add_to_stream("stream2", triple, 25);
+    }
+
+    engine.stop();
+
+    assert!(
+        results.lock().unwrap().is_empty(),
+        "expired support should prevent hotspot emission"
+    );
+}
+
 #[test]
 fn test_static_data_not_visible_in_window_query() {
     // Query has ONLY window patterns — no non-window triple patterns.

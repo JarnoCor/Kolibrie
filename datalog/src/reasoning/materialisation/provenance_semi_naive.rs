@@ -25,6 +25,12 @@ use crate::reasoning::rules::{evaluate_filters, join_premise_with_hash_join};
 /// Semi-naive materialisation strategy parameterized by a provenance semiring.
 struct ProvenanceSemiNaiveStrategy {
     start_idx_for_delta: usize,
+    /// Facts whose tags improved last round — re-enter as delta triggers.
+    delta_improved: Vec<Triple>,
+    /// If Some, used as the delta for the very first round instead of the
+    /// `start_idx_for_delta` slice.  After the first round this is drained to None.
+    explicit_initial_delta: Option<Vec<Triple>>,
+    first_round: bool,
 }
 
 impl ProvenanceSemiNaiveStrategy {
@@ -123,12 +129,29 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
         let provenance = tag_store.provenance().clone();
 
         let end_idx = all_facts.len();
-        let delta_facts = &all_facts[self.start_idx_for_delta..end_idx];
-        self.start_idx_for_delta = end_idx;
+
+        // Build effective delta for this round
+        let effective_delta: Vec<Triple> = if self.first_round {
+            self.first_round = false;
+            self.start_idx_for_delta = end_idx;
+            match self.explicit_initial_delta.take() {
+                Some(explicit) => explicit,
+                None => all_facts[0..end_idx].to_vec(),
+            }
+        } else {
+            let slice = all_facts[self.start_idx_for_delta..end_idx].to_vec();
+            self.start_idx_for_delta = end_idx;
+            let mut combined = slice;
+            combined.extend(self.delta_improved.drain(..));
+            combined
+        };
+
+        let mut improved_this_round: Vec<Triple> = Vec::new();
 
         for rule in rules {
-            let binding_sets =
-                self.find_premise_solutions_with_triples(dictionary, rule, all_facts, delta_facts);
+            let binding_sets = self.find_premise_solutions_with_triples(
+                dictionary, rule, all_facts, &effective_delta,
+            );
 
             for (binding, matched_triples) in &binding_sets {
                 let u32_binding = convert_string_binding_to_u32(binding, dictionary);
@@ -145,12 +168,10 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
                         provenance.conjunction(&acc, &tag)
                     });
 
-                // Skip if the conclusion tag is zero (impossible derivation)
                 if conclusion_tag == provenance.zero() {
                     continue;
                 }
 
-                // Generate conclusion triples
                 for conclusion in &rule.conclusion {
                     let inferred_fact =
                         replace_variables_with_bound_values(conclusion, &u32_binding, dictionary);
@@ -158,21 +179,22 @@ impl<P: Provenance> ProvenanceInferenceStrategy<P> for ProvenanceSemiNaiveStrate
                     let is_new = !known_facts.contains(&inferred_fact);
 
                     if is_new && !new_facts.contains(&inferred_fact) {
-                        // Brand new triple: set its tag directly
                         tag_store.set_tag(&inferred_fact, conclusion_tag.clone());
                         new_facts.insert(inferred_fact);
                     } else {
-                        // Already seen (this round or earlier): disjunction (⊕)
                         if tag_store.update_disjunction(&inferred_fact, &conclusion_tag) {
                             if !is_new {
-                                // Only flag tag_changed for facts from previous rounds
+                                // Tag improved on an existing fact → re-enter as delta
                                 tag_changed = true;
+                                improved_this_round.push(inferred_fact);
                             }
                         }
                     }
                 }
             }
         }
+
+        self.delta_improved = improved_this_round;
 
         ProvenanceInferResult {
             new_facts,
@@ -227,7 +249,12 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
 
     // Stratum 0: run positive fixpoint.
     let mut new_facts = reasoner.infer_with_provenance_strategy_and_rules(
-        ProvenanceSemiNaiveStrategy { start_idx_for_delta: 0 },
+        ProvenanceSemiNaiveStrategy {
+            start_idx_for_delta: 0,
+            delta_improved: Vec::new(),
+            explicit_initial_delta: None,
+            first_round: true,
+        },
         &mut initial_tags,
         &positive_rules,
     );
@@ -237,6 +264,31 @@ pub fn semi_naive_with_initial_tags<P: Provenance>(
         let neg_new = run_negative_stratum_pass(reasoner, &negative_rules, &mut initial_tags, &provenance);
         new_facts.extend(neg_new);
     }
+
+    (new_facts, initial_tags)
+}
+
+pub fn semi_naive_with_initial_tags_and_delta<P: Provenance>(
+    reasoner: &mut Reasoner,
+    _provenance: P,
+    mut initial_tags: TagStore<P>,
+    initial_delta: Vec<Triple>,
+) -> (Vec<Triple>, TagStore<P>) {
+    let positive_rules: Vec<Rule> = reasoner.rules.iter()
+        .filter(|r| r.negative_premise.is_empty())
+        .cloned()
+        .collect();
+
+    let new_facts = reasoner.infer_with_provenance_strategy_and_rules(
+        ProvenanceSemiNaiveStrategy {
+            start_idx_for_delta: 0,
+            delta_improved: Vec::new(),
+            explicit_initial_delta: Some(initial_delta),
+            first_round: true,
+        },
+        &mut initial_tags,
+        &positive_rules,
+    );
 
     (new_facts, initial_tags)
 }

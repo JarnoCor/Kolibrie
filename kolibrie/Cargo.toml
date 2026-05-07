@@ -60,6 +60,26 @@ name = "my_benchmark"
 path = "benches/my_benchmark.rs"
 harness = false
 
+[[bench]]
+name = "cross_window_benchmark"
+path = "benches/cross_window_benchmark.rs"
+harness = false
+
+[[bench]]
+name = "citybench_cross_window_compare"
+path = "benches/citybench_cross_window_compare.rs"
+harness = false
+
+[[bench]]
+name = "rsp_citybench_cross_window"
+path = "benches/rsp_citybench_cross_window.rs"
+harness = false
+
+[[bench]]
+name = "family_tree_cross_window_compare"
+path = "benches/family_tree_cross_window_compare.rs"
+harness = false
+
 [[example]]
 name = "automate_policy"
 path = "examples/policy/automate_policy.rs"

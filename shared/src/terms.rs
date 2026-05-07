@@ -26,6 +26,7 @@ pub type Bindings = Vec<HashMap<String, u32>>;
 pub enum UnresolvedTerm {
     Var(String),
     Prefixed(String),
+    Iri(String),
 }
 
 pub type UnresolvedTriple = (UnresolvedTerm, UnresolvedTerm, UnresolvedTerm);

@@ -54,6 +54,24 @@
 53. Remove the legacy public `ML.TRAIN(...)` compatibility syntax in favor of `TRAIN NEURAL RELATION`
 54. Extend `ML.PREDICT` with Candle-backed execution for models trained via `TRAIN NEURAL RELATION`, automatic rule-time materialization of ML outputs, Python fallback for legacy models, and probability companion facts for binary predictions
 55. Small refactor of SparqlDatabase
+56. Add cross-window SDS/SDS+ representation for RSP-QL reasoning under annotated predicates
+57. Add `ExpirationProvenance` semiring with max/min expiry propagation for cross-window entailment
+58. Add naive cross-window SDS+ materialisation algorithm for full recomputation
+59. Add incremental cross-window SDS+ materialisation algorithm with `SdsWithExpiry`
+60. Fix provenance semi-naive materialisation to re-trigger derivations when existing fact tags improve
+61. Add explicit initial-delta API for provenance semi-naive reasoning so incremental SDS+ starts from `D_new`
+62. Extend N3 document parser for shared prefix blocks, multiple rules, full IRI terms, optional final conclusion dots, and leftover-input validation
+63. Add SDS-aware N3 rule parser wrapper with `WindowContext` and component/window IRI discovery
+64. Add correctness tests comparing naive and incremental cross-window SDS+ outputs and expiry behavior
+65. Add RSP builder API for opt-in cross-window rules via `add_cross_window_rules`
+66. Integrate cross-window SDS+ reasoning into the RSP engine for `Triple` + `SimpleR2R`
+67. Preserve event timestamps in RSP window contents for SDS construction
+68. Add selectable cross-window reasoning mode for RSP evaluation: naive vs incremental
+69. Add RSP integration tests for cross-window derived facts, no-rule baseline, and expiry behavior
+70. Add CityBench-inspired cross-window benchmarks for naive vs incremental SDS+ reasoning
+71. Add RSP-engine CityBench-inspired benchmark using generated streams, S2R windowing, and cross-window rules
+72. Add family-tree cross-window SDS+ benchmark with parentOf facts in SDS stream 1 and all other family facts in SDS stream 2
+73. Add old/new data-ratio evaluation for family-tree benchmark to compare incremental update against naive from-scratch recomputation
 
 0.1.1
 1. Modify whole project by making Cargo workspace
