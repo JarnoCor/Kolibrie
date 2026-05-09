@@ -720,9 +720,10 @@ fn run_simulation(
     let mut velocity_tracker: HashMap<String, u32>    = HashMap::new();
     let mut account_history:  HashMap<String, AccountHistory> = HashMap::new();
 
-    push_event(&events, "start", r#"{"steps":12,"accounts":5}"#);
+    push_event(&events, "start", r#"{"accounts":5}"#);
 
-    for time_step in 0..12_u64 {
+    let mut time_step = 0_u64;
+    loop {
         let mut step_txs: Vec<(Transaction, bool, String, String)> = Vec::new();
 
         for (idx, account) in accounts.iter().enumerate() {
@@ -927,10 +928,9 @@ fn run_simulation(
                 ));
             }
         }
-    }
 
-    push_event(&events, "done", "{}");
-    Ok(())
+        time_step = time_step.wrapping_add(1);
+    }
 }
 
 fn run_reasoning(
