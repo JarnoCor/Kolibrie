@@ -107,6 +107,11 @@ impl Reasoner {
         });
     }
 
+    /// Insert an already-ground triple directly into the fact index.
+    pub fn insert_ground_triple(&mut self, triple: Triple) {
+        self.index_manager.insert(&triple);
+    }
+
     /// Query the ABox for instance-level assertions (using TrieIndex now)
     pub fn query_abox(
         &mut self,

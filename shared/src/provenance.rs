@@ -455,6 +455,29 @@ impl Provenance for DnfWmcProvenance {
     fn is_saturated(&self, old: &WmcFormula, new: &WmcFormula) -> bool { old == new }
 }
 
+/// Expiration-time provenance semiring
+#[derive(Debug, Clone)]
+pub struct ExpirationProvenance;
+
+impl Provenance for ExpirationProvenance {
+    type Tag = u64;
+
+    fn zero(&self) -> u64 { 0 }
+    fn one(&self) -> u64 { u64::MAX }
+
+    /// ⊕ = max: multiple derivation paths — keep the longest-lived
+    fn disjunction(&self, a: &u64, b: &u64) -> u64 { (*a).max(*b) }
+
+    /// ⊗ = min: joined premises — expiry bounded by the weakest premise
+    fn conjunction(&self, a: &u64, b: &u64) -> u64 { (*a).min(*b) }
+
+    fn negate(&self, _a: &u64) -> u64 { 0 }
+    fn saturate(&self, a: &u64) -> u64 { *a }
+    fn tag_from_probability(&self, _: f64) -> u64 { u64::MAX }
+    fn recover_probability(&self, tag: &u64) -> f64 { *tag as f64 }
+    fn is_saturated(&self, old: &u64, new: &u64) -> bool { old == new }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

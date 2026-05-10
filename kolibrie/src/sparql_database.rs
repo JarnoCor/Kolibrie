@@ -9,14 +9,11 @@
  */
 
 use shared::dictionary::Dictionary;
+use shared::query::{FilterExpression, ModelDecl, NeuralRelationDecl, TrainNeuralRelationDecl};
 use shared::quoted_triple_store::{QuotedTripleStore, is_quoted_triple_id};
-use crate::sliding_window::SlidingWindow;
-use shared::triple::TimestampedTriple;
 use shared::triple::Triple;
-use shared::query::FilterExpression;
 use crate::parser;
 use crate::utils;
-use crate::utils::current_timestamp;
 use crate::utils::ClonableFn;
 #[cfg(feature = "cuda")]
 use crate::cuda::cuda_join::*;
@@ -48,13 +45,18 @@ const HASHMAP_INITIAL_CAPACITY1: usize = 1024;
 #[derive(Debug, Clone)]
 pub struct SparqlDatabase {
     pub triples: BTreeSet<Triple>,
-    pub streams: Vec<TimestampedTriple>,
-    pub sliding_window: Option<SlidingWindow>,
     pub dictionary: Arc<RwLock<Dictionary>>,
     pub prefixes: HashMap<String, String>,
     pub udfs: HashMap<String, ClonableFn>,
     pub index_manager: UnifiedIndex,
     pub rule_map: HashMap<String, String>,
+    pub model_decls: HashMap<String, ModelDecl>,
+    pub neural_relation_decls: HashMap<String, NeuralRelationDecl>,
+    pub train_neural_relation_decls: HashMap<String, TrainNeuralRelationDecl>,
+    pub neural_model_artifacts: HashMap<String, String>,
+    pub neural_materialized_triples: HashMap<String, Vec<Triple>>,
+    pub ml_predict_materialized_triples: HashMap<String, Vec<Triple>>,
+    pub probability_seeds: HashMap<Triple, f64>,
     pub cached_stats: Option<Arc<DatabaseStats>>,
     pub quoted_triple_store: Arc<RwLock<QuotedTripleStore>>,
 }
@@ -64,13 +66,18 @@ impl SparqlDatabase {
     pub fn new() -> Self {
         Self {
             triples: BTreeSet::new(),
-            streams: Vec::new(),
-            sliding_window: None,
             dictionary: Arc::new(RwLock::new(Dictionary::new())),
             prefixes: HashMap::new(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            model_decls: HashMap::new(),
+            neural_relation_decls: HashMap::new(),
+            train_neural_relation_decls: HashMap::new(),
+            neural_model_artifacts: HashMap::new(),
+            neural_materialized_triples: HashMap::new(),
+            ml_predict_materialized_triples: HashMap::new(),
+            probability_seeds: HashMap::new(),
             cached_stats: None,
             quoted_triple_store: Arc::new(RwLock::new(QuotedTripleStore::new())),
         }
@@ -239,6 +246,18 @@ impl SparqlDatabase {
             object: object_id,
         };
         self.add_triple(triple);
+    }
+
+    pub fn add_tagged_triple(&mut self, subject: &str, predicate: &str, object: &str, probability: f64) {
+        let mut dict = self.dictionary.write().unwrap();
+        let s = dict.encode(subject);
+        let p = dict.encode(predicate);
+        let o = dict.encode(object);
+        drop(dict);
+
+        let triple = Triple { subject: s, predicate: p, object: o };
+        self.add_triple(triple.clone());
+        self.probability_seeds.insert(triple, probability);
     }
 
     /// Helper function that accepts parts of a triple, constructs a Triple, and deletes it
@@ -1368,18 +1387,6 @@ impl SparqlDatabase {
         }
     }
 
-    pub fn add_stream_data(&mut self, triple: Triple, timestamp: u64) {
-        self.streams.push(TimestampedTriple { triple, timestamp });
-    }
-
-    pub fn time_based_window(&self, start: u64, end: u64) -> BTreeSet<Triple> {
-        self.streams
-            .iter()
-            .filter(|ts_triple| ts_triple.timestamp >= start && ts_triple.timestamp <= end)
-            .map(|ts_triple| ts_triple.triple.clone())
-            .collect()
-    }
-
     pub fn apply_filters_simd<'a>(
         &self,
         results: Vec<BTreeMap<&'a str, String>>,
@@ -1895,40 +1902,31 @@ impl SparqlDatabase {
             });
         }
 
-        // Merge the triples and streams
+        // Merge the triples
         let union_triples: BTreeSet<Triple> =
             self.triples.union(&re_encoded_triples).cloned().collect();
-        let mut union_streams = self.streams.clone();
-        for ts_triple in &other.streams {
-            let subject = merged_dictionary
-                .encode(other_dict.decode(ts_triple.triple.subject).unwrap());
-            let predicate = merged_dictionary
-                .encode(other_dict.decode(ts_triple.triple.predicate).unwrap());
-            let object =
-                merged_dictionary.encode(other_dict.decode(ts_triple.triple.object).unwrap());
-            let re_encoded_ts_triple = TimestampedTriple {
-                triple: Triple {
-                    subject,
-                    predicate,
-                    object,
-                },
-                timestamp: ts_triple.timestamp,
-            };
-            if !union_streams.contains(&re_encoded_ts_triple) {
-                union_streams.push(re_encoded_ts_triple);
-            }
+        let mut merged_seeds = self.probability_seeds.clone();
+        for (triple, prob) in &other.probability_seeds {
+            let subject = merged_dictionary.encode(other_dict.decode(triple.subject).unwrap());
+            let predicate = merged_dictionary.encode(other_dict.decode(triple.predicate).unwrap());
+            let object = merged_dictionary.encode(other_dict.decode(triple.object).unwrap());
+            merged_seeds.insert(Triple { subject, predicate, object }, *prob);
         }
-        drop(other_dict);
 
         Self {
             triples: union_triples,
-            streams: union_streams,
-            sliding_window: self.sliding_window.clone(),
             dictionary: Arc::new(RwLock::new(merged_dictionary)),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            model_decls: self.model_decls.clone(),
+            neural_relation_decls: self.neural_relation_decls.clone(),
+            train_neural_relation_decls: self.train_neural_relation_decls.clone(),
+            neural_model_artifacts: self.neural_model_artifacts.clone(),
+            neural_materialized_triples: self.neural_materialized_triples.clone(),
+            ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
+            probability_seeds: merged_seeds,
             cached_stats: None,
             quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
@@ -1994,13 +1992,18 @@ impl SparqlDatabase {
 
         Self {
             triples: joined_triples,
-            streams: self.streams.clone(),
-            sliding_window: self.sliding_window.clone(),
             dictionary: Arc::clone(&self.dictionary),
             prefixes: self.prefixes.clone(),
             udfs: HashMap::new(),
             index_manager: UnifiedIndex::new(),
             rule_map: HashMap::new(),
+            model_decls: self.model_decls.clone(),
+            neural_relation_decls: self.neural_relation_decls.clone(),
+            train_neural_relation_decls: self.train_neural_relation_decls.clone(),
+            neural_model_artifacts: self.neural_model_artifacts.clone(),
+            neural_materialized_triples: self.neural_materialized_triples.clone(),
+            ml_predict_materialized_triples: self.ml_predict_materialized_triples.clone(),
+            probability_seeds: HashMap::new(),
             cached_stats: None,
             quoted_triple_store: Arc::clone(&self.quoted_triple_store),
         }
@@ -2908,148 +2911,6 @@ impl SparqlDatabase {
         results
     }
 
-    pub fn istream(&self, last_timestamp: u64) -> Vec<Triple> {
-        let mut new_triples = vec![];
-        for ts_triple in &self.streams {
-            if ts_triple.timestamp > last_timestamp {
-                new_triples.push(ts_triple.triple.clone());
-            }
-        }
-        new_triples
-    }
-
-    pub fn dstream(&self, last_timestamp: u64, current_timestamp: u64) -> Vec<Triple> {
-        let mut old_triples = BTreeSet::new();
-        let mut current_triples = BTreeSet::new();
-
-        for ts_triple in &self.streams {
-            if ts_triple.timestamp <= last_timestamp {
-                old_triples.insert(ts_triple.triple.clone());
-            }
-            if ts_triple.timestamp <= current_timestamp {
-                current_triples.insert(ts_triple.triple.clone());
-            }
-        }
-
-        old_triples.difference(&current_triples).cloned().collect()
-    }
-
-    pub fn rstream(&self, start: u64, end: u64) -> Vec<Triple> {
-        let mut current_triples = BTreeSet::new();
-
-        for ts_triple in &self.streams {
-            if ts_triple.timestamp >= start && ts_triple.timestamp <= end {
-                current_triples.insert(ts_triple.triple.clone());
-            }
-        }
-
-        current_triples.into_iter().collect()
-    }
-
-    pub fn set_sliding_window(&mut self, width: u64, slide: u64) {
-        self.sliding_window = Some(SlidingWindow::new(width, slide));
-    }
-
-    pub fn evaluate_sliding_window(&mut self) -> Vec<Triple> {
-        if let Some(window) = &self.sliding_window {
-            let current_time = current_timestamp();
-            let start_time = if current_time > window.width {
-                current_time - window.width
-            } else {
-                0
-            };
-
-            let result = self.rstream(start_time, current_time);
-
-            // Update last evaluated time
-            self.sliding_window.as_mut().unwrap().last_evaluated = current_time;
-
-            result
-        } else {
-            Vec::new()
-        }
-    }
-
-    pub fn window_close_policy(&mut self) -> Vec<Triple> {
-        let mut result = vec![];
-        if let Some(window) = &self.sliding_window {
-            let current_time = current_timestamp();
-            if current_time >= window.last_evaluated + window.slide {
-                result = self.evaluate_sliding_window();
-            }
-        }
-        result
-    }
-
-    pub fn content_change_policy(&mut self) -> Vec<Triple> {
-        let mut _result = vec![];
-        let initial_state: BTreeSet<_> = self.triples.clone();
-        if let Some(_window) = &self.sliding_window {
-            _result = self.evaluate_sliding_window();
-            let current_state: BTreeSet<_> = self.triples.clone();
-            if initial_state != current_state {
-                return _result;
-            }
-        }
-        vec![]
-    }
-
-    pub fn non_empty_content_policy(&mut self) -> Vec<Triple> {
-        let result = self.evaluate_sliding_window();
-        if !result.is_empty() {
-            return result;
-        }
-        vec![]
-    }
-
-    pub fn periodic_policy(&mut self, interval: std::time::Duration) -> Vec<Triple> {
-        let mut result = vec![];
-        if let Some(window) = &self.sliding_window {
-            let current_time = current_timestamp();
-            if current_time >= window.last_evaluated + interval.as_secs() {
-                result = self.evaluate_sliding_window();
-            }
-        }
-        result
-    }
-
-    pub fn auto_policy_evaluation(&mut self) -> Vec<Triple> {
-        let current_time = current_timestamp();
-        let mut result = vec![];
-
-        if let Some(window) = &self.sliding_window {
-            if current_time >= window.last_evaluated + window.slide {
-                println!("Window Close Policy");
-                result.extend(self.evaluate_sliding_window());
-            }
-        }
-
-        let initial_state: BTreeSet<_> = self.triples.clone();
-        if let Some(_window) = &self.sliding_window {
-            let current_state: BTreeSet<_> = self.triples.clone();
-            if initial_state != current_state {
-                println!("Content Change Policy");
-                result.extend(self.evaluate_sliding_window());
-            }
-        }
-
-        let non_empty_result = self.evaluate_sliding_window();
-        if !non_empty_result.is_empty() {
-            println!("Non-empty Content Policy");
-            result.extend(non_empty_result);
-        }
-
-        let interval = std::time::Duration::new(5, 0);
-        if let Some(window) = &self.sliding_window {
-            if current_time >= window.last_evaluated + interval.as_secs() {
-                println!("Periodic Policy");
-                result.extend(self.evaluate_sliding_window());
-            }
-        }
-
-        result
-    }
-
     pub fn handle_query(&mut self, query: &str) -> String {
         // Assume the query string is in a basic format like "subject predicate object"
         let parts: Vec<&str> = query.split_whitespace().collect();
@@ -3750,4 +3611,3 @@ fn process_join_efficiently<'a>(
         }
     }
 }
-

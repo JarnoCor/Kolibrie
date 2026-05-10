@@ -12,6 +12,9 @@
 mod tests {
     use kolibrie::parser::*;
     use shared::query::FilterExpression;
+    use shared::query::TrainingDataSource;
+    use shared::query::{ModelArch, NeuralOutputKind};
+    use kolibrie::neural_relations::lower_ml_predict_alias;
     
     #[test]
     fn test_identifier_parsing() {
@@ -471,4 +474,116 @@ WHERE {
         assert!(prob.confidence.is_none());
     }
 
+    #[test]
+    fn parse_model_decl_exclusive() {
+        let input = r#"
+            MODEL "mnist_classifier" {
+                ARCH MLP { HIDDEN [64, 32] }
+                OUTPUT EXCLUSIVE { "0", "1", "2" }
+            }
+        "#;
+        let (_, decl) = parse_model_decl(input).unwrap();
+        assert_eq!(decl.name, "mnist_classifier");
+        assert_eq!(decl.arch, ModelArch::Mlp { hidden_layers: vec![64, 32] });
+        assert_eq!(
+            decl.output_kind,
+            NeuralOutputKind::Exclusive {
+                labels: vec!["0".to_string(), "1".to_string(), "2".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_neural_relation_decl_multiline() {
+        let input = r#"
+            NEURAL RELATION ex:predictedDigit USING MODEL "mnist_classifier" {
+                INPUT {
+                    ?sample ex:pixel_0 ?p0 .
+                    ?sample ex:pixel_1 ?p1 .
+                    ?sample ex:pixel_2 ?p2 .
+                }
+                FEATURES { ?p0, ?p1, ?p2 }
+            }
+        "#;
+        let (_, decl) = parse_neural_relation_decl(input).unwrap();
+        assert_eq!(decl.predicate, "ex:predictedDigit");
+        assert_eq!(decl.model_name, "mnist_classifier");
+        assert_eq!(decl.input_patterns.len(), 3);
+        assert_eq!(decl.anchor_var, "?sample");
+        assert_eq!(decl.feature_vars, vec!["?p0", "?p1", "?p2"]);
+    }
+
+    #[test]
+    fn parse_train_neural_relation_data_block() {
+        let input = r#"
+            TRAIN NEURAL RELATION ex:predictedDigit {
+                DATA {
+                    ?sample ex:label ?label .
+                }
+                LABEL ?label
+                TARGET { ?sample ex:predictedDigit ?label }
+                LOSS cross_entropy
+                OPTIMIZER adam
+                LEARNING_RATE 0.001
+                EPOCHS 50
+                BATCH_SIZE 16
+                SAVE_TO "mnist_digit_model.bin"
+            }
+        "#;
+        let (_, decl) = parse_train_neural_relation_decl(input).unwrap();
+        match decl.data_source {
+            TrainingDataSource::GraphPattern(patterns) => assert_eq!(patterns.len(), 1),
+            _ => panic!("expected DATA graph-pattern source"),
+        }
+        assert_eq!(decl.label_var, "?label");
+        assert_eq!(decl.target_triple.1, "ex:predictedDigit");
+        assert_eq!(decl.save_path.as_deref(), Some("mnist_digit_model.bin"));
+    }
+
+    #[test]
+    fn parse_train_neural_relation_query_block() {
+        let input = r#"
+            TRAIN NEURAL RELATION ex:predictedDigit {
+                QUERY {
+                    SELECT ?sample ?p0 ?p1 ?label
+                    WHERE {
+                        ?sample ex:pixel_0 ?p0 .
+                        ?sample ex:pixel_1 ?p1 .
+                        ?sample ex:label ?label .
+                    }
+                }
+                LABEL ?label
+                TARGET { ?sample ex:predictedDigit ?label }
+                LOSS cross_entropy
+                OPTIMIZER adam
+                LEARNING_RATE 0.001
+                EPOCHS 5
+                BATCH_SIZE 2
+            }
+        "#;
+        let (_, decl) = parse_train_neural_relation_decl(input).unwrap();
+        match decl.data_source {
+            TrainingDataSource::Query(query) => assert!(query.contains("SELECT ?sample ?p0 ?p1 ?label")),
+            _ => panic!("expected QUERY fallback source"),
+        }
+    }
+
+    #[test]
+    fn lower_ml_predict_alias_test() {
+        let predict_input = r#"
+            ML.PREDICT(MODEL "fraud_predictor",
+                INPUT {
+                    SELECT ?tx ?amt WHERE {
+                        ?tx ex:amount ?amt .
+                    }
+                },
+                OUTPUT ?score
+            )
+        "#;
+        let (_, predict_clause) = parse_ml_predict(predict_input).unwrap();
+        let relation_decl = lower_ml_predict_alias(&predict_clause).unwrap();
+        assert_eq!(relation_decl.model_name, "fraud_predictor");
+        assert_eq!(relation_decl.predicate, "?score");
+        assert_eq!(relation_decl.input_patterns.len(), 1);
+    }
 }

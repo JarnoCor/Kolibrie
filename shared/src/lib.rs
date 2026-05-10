@@ -23,3 +23,5 @@ pub mod quoted_triple_store;
 pub mod provenance;
 pub mod tag_store;
 pub mod sdd;
+pub mod seed_spec;
+pub mod diff_sdd;
