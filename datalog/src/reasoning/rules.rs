@@ -151,6 +151,83 @@ fn join_remaining(
     results
 }
 
+/// Given a rule, a set of all facts, and a set of "changed" facts (delta) with timestamps
+pub fn join_rule_with_timestamps(
+    rule: &Rule,
+    all_facts: &HashMap<Triple, u64>,
+    delta: &HashMap<Triple, u64>,
+) -> Vec<(HashMap<String, u32>, u64)> {
+    let n = rule.premise.len();
+    let mut results = Vec::new();
+
+    // For each premise position i
+    for i in 0..n {
+        // For each fact in the delta that might "fire" the rule on this premise
+        for (fact, ts) in delta.iter() {
+            let mut binding = HashMap::new();
+            // NOTE: For a rule with one premise, use index 0 (not 1)
+            if matches_rule_pattern(&rule.premise[i], fact, &mut binding) {
+                // Now join with the remaining premises (all j ≠ i)
+                let joined = join_remaining_with_timestamps(rule, i, all_facts, delta, binding, *ts);
+                results.extend(joined);
+            }
+        }
+    }
+    results
+}
+
+/// Given a rule, a set of all facts, and a binding that matches some premise
+fn join_remaining_with_timestamps(
+    rule: &Rule,
+    changed_idx: usize,
+    all_facts: &HashMap<Triple, u64>,
+    delta: &HashMap<Triple, u64>,
+    binding: HashMap<String, u32>,
+    min_timestamp: u64,
+) -> Vec<(HashMap<String, u32>, u64)> {
+    let mut results = vec![(binding, min_timestamp)];
+    let n = rule.premise.len();
+
+    // let difference: HashSet<Triple> = all_facts.iter().filter(|triple| !delta.contains(triple)).cloned().collect();
+    // let difference = all_facts.difference(&delta);
+
+    // For each other premise j (order can be arbitrary)
+    for j in 0..n {
+        if j == changed_idx {
+            continue;
+        }
+        let mut new_results = Vec::new();
+        // For every binding so far
+        for (partial_binding, current_min) in results.into_iter() {
+            // And for every fact in all_facts
+            if j > changed_idx {
+                for (fact, timestamp) in all_facts.iter() {
+                    let mut b = partial_binding.clone();
+                    if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
+                        let new_min = current_min.min(*timestamp);
+                        new_results.push((b, new_min));
+                    }
+                }
+            } else {
+                for (fact, timestamp) in all_facts.iter() {
+                    if !delta.contains_key(fact) {
+                        let mut b = partial_binding.clone();
+                        if matches_rule_pattern(&rule.premise[j], fact, &mut b) {
+                            let new_min = current_min.min(*timestamp);
+                            new_results.push((b, new_min));
+                        }
+                    }
+                }
+            }
+        }
+        results = new_results;
+        if results.is_empty() {
+            break;
+        }
+    }
+    results
+}
+
 pub fn evaluate_filters(
     bindings: &HashMap<String, u32>,
     filters: &Vec<FilterCondition>,

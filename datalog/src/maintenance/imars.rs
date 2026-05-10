@@ -1,5 +1,4 @@
-use std::cmp::min;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::collections::hash_set::{Iter, IntoIter};
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -8,9 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::mem;
 
-use shared::{dictionary::Dictionary, terms::TriplePattern, triple::{TimestampedTriple, Triple}};
+// use shared::{dictionary, triple};
+use shared::{/*dictionary::Dictionary, terms::TriplePattern, */triple::{TimestampedTriple, Triple}};
 
-use crate::{maintenance::construct_triple, reasoning::{Reasoner, rules::{evaluate_filters, join_rule}}};
+use crate::reasoning::rules::join_rule_with_timestamps;
+use crate::{maintenance::construct_triple, reasoning::{Reasoner, rules::{evaluate_filters/*, join_rule*/}}};
 
 #[derive(Clone, Debug)]
 pub enum ReportStrategy {
@@ -55,12 +56,18 @@ impl Report {
     pub fn add(&mut self, strategy: ReportStrategy) {
         self.strategies.push(strategy);
     }
-    pub fn report(&mut self, close_time: usize, content: &BTreeSet<TimestampedTriple>, ts: usize) -> bool {
+    pub fn report(&mut self, close_time: usize, content: &BTreeMap<u64, HashSet<Triple>>, ts: usize) -> bool {
+        let mut contents = BTreeSet::new();
+        for (timestamp, set) in content.clone() {
+            for triple in set {
+                contents.insert(TimestampedTriple { triple, timestamp });
+            }
+        }
         self.strategies.iter().all(|strategy| match strategy {
             ReportStrategy::NonEmptyContent => content.len() > 0,
             ReportStrategy::OnContentChange => {
-                let comp = content.eq(&self.last_change);
-                self.last_change = content.clone();
+                let comp = contents.eq(&self.last_change);
+                self.last_change = contents.clone();
                 comp
             }
             ReportStrategy::OnWindowClose => close_time <= ts,
@@ -122,8 +129,9 @@ pub struct IMARSWindow {
     pub reasoner: Reasoner,
     pub width: usize,
     pub slide: usize,
-    pub timestamped_contents: BTreeSet<TimestampedTriple>, // used to store the timestamps in order for efficient removal of the oldest ones
-    index: HashMap<Triple, u64>, // used to look up timestamps efficiently in any order
+    pub timeline: BTreeMap<u64, HashSet<Triple>>, // used to track the triples per timestamp
+    pub index: HashMap<Triple, u64>, // tracks which timestamps are associated with each triple
+
     report: Report,
     tick: Tick,
     pub app_time: usize,
@@ -139,7 +147,7 @@ impl Clone for IMARSWindow {
             reasoner: self.reasoner.clone(),
             width: self.width.clone(),
             slide: self.slide.clone(),
-            timestamped_contents: self.timestamped_contents.clone(),
+            timeline: self.timeline.clone(),
             index: self.index.clone(),
             report: self.report.clone(),
             tick: self.tick.clone(),
@@ -157,7 +165,7 @@ impl IMARSWindow {
             reasoner: Reasoner::new(),
             width,
             slide,
-            timestamped_contents: BTreeSet::new(),
+            timeline: BTreeMap::new(),
             index: HashMap::new(),
             report,
             tick,
@@ -197,7 +205,7 @@ impl IMARSWindow {
 
         // emit the contents of the window, based on the tick type
         if let Some(TimestampedTriple { triple: _, timestamp: max_timestamp }) = max_timestamp_triple {
-            if self.report.report(self.app_time+self.width, &self.timestamped_contents, ts) {
+            if self.report.report(self.app_time+self.width, &self.timeline, ts) {
 
                 match self.tick {
                     Tick::TimeDriven => {
@@ -206,8 +214,10 @@ impl IMARSWindow {
                             self.last_emit_time = ts;
 
                             let mut contents = ContentContainer::new();
-                            for triple in self.timestamped_contents.clone() {
-                                contents.add(triple, ts);
+                            for (timestamp, set) in self.timeline.clone() {
+                                for triple in set {
+                                    contents.add(TimestampedTriple { triple, timestamp }, ts);
+                                }
                             }
 
                             if let Some(sender) = &self.consumer {
@@ -228,8 +238,10 @@ impl IMARSWindow {
                             self.last_emit_time = max_timestamp as usize;
 
                             let mut contents = ContentContainer::new();
-                            for triple in self.timestamped_contents.clone() {
-                                contents.add(triple, ts);
+                            for (timestamp, set) in self.timeline.clone() {
+                                for triple in set {
+                                    contents.add(TimestampedTriple { triple, timestamp }, ts);
+                                }
                             }
 
                             if let Some(sender) = &self.consumer {
@@ -253,118 +265,122 @@ impl IMARSWindow {
 
     pub fn maintenance(&mut self, added_triples: Vec<TimestampedTriple>, now: usize) {
         // remove all triples that fall out of the window
-        while let Some(triple) = self.timestamped_contents.first() {
-            if triple.timestamp < now.try_into().unwrap() {
-                let deleted = self.timestamped_contents.pop_first().unwrap();
-                self.index.remove(&deleted.triple);
-                self.reasoner.index_manager.delete(&deleted.triple);
-            } else {
-                break;
-            }
-        }
+        let expired: Vec<u64> = self.timeline.range(0..now as u64)
+            .map(|(timestamp, _)| *timestamp)
+            .collect();
 
-        // this tracks which triples were inserted and their timestamp
-        // the reason this does not hold timestamped triples is to easily convert the keys (plain triples) to a set later
-        let mut inserted: HashSet<Triple> = HashSet::new();
-
-        // add the new triples
-        for triple in added_triples {
-            let expiration: u64 = triple.timestamp + self.width as u64;
-
-            let expiration_triple = TimestampedTriple { triple: triple.triple.clone(), timestamp: expiration };
-
-            // case 1: the triple renews another one already present
-            if let Some(present_triple_ts) = self.index.get(&triple.triple) {
-
-                if expiration > *present_triple_ts {
-                    let to_remove = TimestampedTriple { triple: triple.triple.clone(), timestamp: *present_triple_ts };
-
-                    self.index.insert(triple.triple.clone(), expiration);
-
-                    self.timestamped_contents.remove(&to_remove);
-                    self.timestamped_contents.insert(expiration_triple);
-
-                    inserted.insert(triple.triple);
-                }
-            }
-            // case 2: the triple was not already present
-            else {
-                self.index.insert(triple.triple.clone(), expiration_triple.timestamp);
-                self.timestamped_contents.insert(expiration_triple);
-
-                self.reasoner.index_manager.insert(&triple.triple);
-                inserted.insert(triple.triple);
-            }
-        }
-
-        let mut materialisation: HashSet<Triple> = self.timestamped_contents.iter()
-                .cloned()
-                .map(|triple| triple.triple)
-                .collect();
-
-        let mut bindings: Vec<HashMap<String, u32>>;
-        let mut inferred: Triple;
-
-        // infer new triples, but only consider rules where at least one body atom can be matched with a new triple
-        for rule in self.reasoner.rules.clone() {
-
-            bindings = join_rule(&rule, &materialisation, &inserted);
-
-            for binding in bindings {
-                if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
-
-                    for conclusion in &rule.conclusion {
-                        inferred = construct_triple(conclusion,  &binding, &mut self.reasoner.dictionary.write().unwrap());
-
-                        let min_timestamp = self.find_min_timestamp(&rule.premise, &binding, &mut self.reasoner.dictionary.write().unwrap());
-
-                        let expiration_triple = TimestampedTriple { triple: inferred.clone(), timestamp: min_timestamp };
-
-                        // case 1: the triple renews another one already present
-                        if let Some(present_triple_ts) = self.index.get(&inferred) {
-
-                            if min_timestamp > *present_triple_ts {
-                                let to_remove = TimestampedTriple { triple: inferred.clone(), timestamp: *present_triple_ts };
-
-                                self.index.insert(inferred.clone(), min_timestamp);
-
-                                self.timestamped_contents.remove(&to_remove);
-                                self.timestamped_contents.insert(expiration_triple.clone());
-
-                                inserted.insert(inferred);
-                            }
+        let mut deleted: HashSet<Triple> = HashSet::new();
+        for timestamp in expired {
+            if let Some(triples) = self.timeline.remove(&timestamp) {
+                for triple in triples {
+                    if let Some(&current_expiration) = self.index.get(&triple) {
+                        // only remove the triple if the timestamp is the current one
+                        if current_expiration <= timestamp {
+                            self.index.remove(&triple);
+                            self.reasoner.index_manager.delete(&triple);
+                            deleted.insert(triple);
                         }
-                        // case 2: the triple was not already present
-                        else {
-                            self.index.insert(inferred.clone(), min_timestamp);
-                            self.timestamped_contents.insert(expiration_triple.clone());
-
-                            self.reasoner.index_manager.insert(&inferred);
-                            materialisation.insert(inferred.clone());
-                            inserted.insert(inferred);
-                        }
-
                     }
                 }
             }
         }
+
+        let added = self.insert(&deleted, &added_triples);
+
+        for (triple, _) in added.iter() {
+            self.reasoner.index_manager.insert(triple);
+        }
     }
 
-    /// Find which triples were used in the binding process, and find the smallest timestamp associated with them.
-    fn find_min_timestamp(&self, premises: &Vec<TriplePattern>, binding: &HashMap<String, u32>, dict: &mut Dictionary) -> u64 {
-        let mut min_timestamp = u64::MAX;
+    fn insert(&mut self, deleted: &HashSet<Triple>, to_add: &Vec<TimestampedTriple>) -> HashMap<Triple, u64> {
+        let valid_facts: HashMap<Triple, u64> = self.index.iter()
+                .filter(|(triple, _)| !deleted.contains(*triple))
+                .map(|(t, e)| (*t, *e))
+                .collect();
 
-        let mut constructed: Triple;
-        for premise in premises {
-            constructed = construct_triple(premise, binding, dict);
+        // the capacity is chosen arbitratily
+        let mut timeline_updates: HashMap<u64, Vec<Triple>> = HashMap::with_capacity(to_add.len() * 3);
 
-            // get the triples expiration timestamp
-            if let Some(timestamp) = self.index.get(&constructed) {
-                min_timestamp = min(min_timestamp, *timestamp);
+        let mut n_a: HashMap<Triple, u64> = to_add.iter()
+                .filter_map(|triple: &TimestampedTriple| {
+                    let expiration = triple.timestamp + self.width as u64;
+                    let current_expiration = self.index.get(&triple.triple).copied().unwrap_or(0);
+                    if expiration > current_expiration {
+                        self.index.insert(triple.triple, expiration);
+                        timeline_updates.entry(expiration).or_insert_with(|| Vec::new()).push(triple.triple);
+
+                        Some((triple.triple, expiration))
+                    } else {
+                        None
+                    }
+
+                })
+                .collect();
+
+        let mut delta: HashMap<Triple, u64>;
+        let mut added: HashMap<Triple, u64> = HashMap::new();
+
+        let dictionary = self.reasoner.dictionary.clone();
+        let mut dictionary = dictionary.write().unwrap();
+
+        loop {
+            // calculate the unprocessed changes
+            delta = n_a.iter()
+                    .filter(|(triple, timestamp)| {
+                        let current_expiration = valid_facts.get(*triple).copied().unwrap_or(0);
+                        let added_expiration = added.get(*triple).copied().unwrap_or(0);
+
+                        **timestamp > current_expiration && **timestamp > added_expiration
+                    })
+                    .map(|(triple, timestamp)| (triple.clone(), *timestamp))
+                    .collect();
+
+            // if there are no more changes, stop
+            if delta.is_empty() {
+                break;
+            }
+
+            // add the delta to added
+            added.extend(delta.clone());
+
+            // clear the contents of the previous iteration
+            n_a.clear();
+
+            let facts: HashMap<Triple, u64> = valid_facts.iter()
+                    .map(|(t, e)| (*t, *e))
+                    .chain(added.iter().map(|(t, e)| (*t, *e)))
+                    .collect();
+
+            let mut results: Vec<(HashMap<String, u32>, u64)>;
+            let mut inferred: Triple;
+            for rule in self.reasoner.rules.clone().iter() {
+                results = join_rule_with_timestamps(rule, &facts, &delta);
+                for (binding, min_timestamp) in results.iter() {
+                    if evaluate_filters(binding, &rule.filters, &dictionary) {
+                        for conclusion in &rule.conclusion {
+                            inferred = construct_triple(conclusion,  binding, &mut dictionary);
+
+                            let entry = n_a.entry(inferred).or_insert(0);
+                            if *min_timestamp > *entry {
+                                *entry = *min_timestamp;
+                                timeline_updates.entry(*min_timestamp).or_insert_with(|| Vec::with_capacity(rule.conclusion.len())).push(inferred);
+                            }
+
+                        }
+                    }
+                }
             }
         }
 
-        min_timestamp
+        drop(dictionary);
+
+        // commit timeline updates
+        for (timestamp, triples) in timeline_updates.drain() {
+            self.timeline.entry(timestamp).or_insert_with(HashSet::new).extend(triples);
+        }
+
+        // return the added triples
+        added
     }
 
     pub fn register(&mut self) -> Receiver<ContentContainer<TimestampedTriple>> {
@@ -380,8 +396,10 @@ impl IMARSWindow {
     }
     pub fn flush(&mut self) {
         let mut content = ContentContainer::new();
-        for triple in self.timestamped_contents.clone() {
-            content.add(triple, self.app_time);
+        for (timestamp, set) in self.timeline.clone() {
+            for triple in set {
+                content.add(TimestampedTriple { triple, timestamp }, self.app_time);
+            }
         }
 
         if let Some(call_back) = &mut self.call_back {
@@ -473,7 +491,6 @@ mod tests {
 
 
     fn vec_equal<T: Eq+Hash>(vec1: &Vec<T>, vec2: &Vec<T>) -> bool {
-        // TODO: is dit correct?
         let mut counts: HashMap<&T, u32> = HashMap::new();
 
         for element in vec1 {

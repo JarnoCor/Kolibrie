@@ -10,7 +10,7 @@
 use crate::terms::{Term, TriplePattern};
 use serde::{Deserialize, Serialize};
 
-#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Triple {
     pub subject: u32,
     pub predicate: u32,
@@ -30,7 +30,7 @@ impl Triple {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Eq, PartialOrd, Hash)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq, PartialOrd, Hash)]
 pub struct TimestampedTriple {
     pub triple: Triple,
     pub timestamp: u64,
