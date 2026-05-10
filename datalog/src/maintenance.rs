@@ -22,8 +22,6 @@ pub use dred::DRedMaintenance;
 
 pub use fbf::FBFMaintenance;
 
-// pub use imars::IMARSWindow;
-
 use shared::dictionary::Dictionary;
 use shared::rule::Rule;
 use shared::terms::Term;
@@ -59,25 +57,6 @@ fn find_premise_solutions(dict: &Dictionary, rule: &Rule, all_facts: &Vec<Triple
         .map(|binding| convert_string_binding_to_u32(&binding, dict))
         .collect()
 }
-
-// fn construct_triple_from_bindings(dict: &mut Dictionary, rule: &Rule, bindings: &Vec<HashMap<String, u32>>) -> HashSet<Triple> {
-//     let mut result: HashSet<Triple> = HashSet::new();
-//     let mut inferred: Triple;
-
-//     for binding in bindings {
-//         // check if the binding adheres to the filters of the rule
-//         if evaluate_filters(binding, &rule.filters, dict) {
-
-//             for conclusion in &rule.conclusion {
-//                 inferred = replace_variables_with_bound_values(conclusion, &binding, dict);
-//                 result.insert(inferred);
-//             }
-//         }
-//     }
-
-//     result
-// }
-
 
 /// Construct a new Triple from a conclusion pattern and bound variables
 fn construct_triple(
@@ -135,7 +114,7 @@ fn evaluate_rule_with_restrictions(results: &mut Vec<Triple>, dict: &mut Diction
 
     for binding in bindings {
         // check if the bindings are disjoint with positive_2 or not
-        if check_bindings(dict, rule, &binding, positive_2) {
+        if check_bindings(rule, &binding, positive_2) {
             // check if the binding adheres to the filters of the rule
             if evaluate_filters(&binding, &rule.filters, dict) {
                 for conclusion in &rule.conclusion {
@@ -148,51 +127,50 @@ fn evaluate_rule_with_restrictions(results: &mut Vec<Triple>, dict: &mut Diction
     }
 }
 
-fn check_bindings(dict: &mut Dictionary, rule: &Rule, binding: &HashMap<String, u32>, positive: &HashSet<Triple>) -> bool {
+fn check_bindings(rule: &Rule, binding: &HashMap<String, u32>, positive: &HashSet<Triple>) -> bool {
+    for triple in &rule.premise {
+        let subject = match &triple.0 {
+            Term::Variable(v) => {
+                binding.get(v).copied().unwrap_or_else(|| {
+                    eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
+                    0
+                })
+            },
+            Term::Constant(c) => *c,
+            _ => 0
+        };
 
-        for triple in &rule.premise {
-            let subject = match &triple.0 {
-                Term::Variable(v) => {
-                    binding.get(v).copied().unwrap_or_else(|| {
-                        eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
-                        0
-                    })
-                },
-                Term::Constant(c) => *c,
-                _ => 0
-            };
+        let predicate = match &triple.1 {
+            Term::Variable(v) => {
+                binding.get(v).copied().unwrap_or_else(|| {
+                    eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
+                    0
+                })
+            },
+            Term::Constant(c) => *c,
+            _ => 0
+        };
 
-            let predicate = match &triple.1 {
-                Term::Variable(v) => {
-                    dict.encode(v)
-                },
-                Term::Constant(c) => *c,
-                _ => 0
-            };
+        let object = match &triple.2 {
+            Term::Variable(v) => {
+                binding.get(v).copied().unwrap_or_else(|| {
+                    eprintln!("Warning: Variable '{}' not found in bindings. Available variables: {:?}", v, binding.keys().collect::<Vec<_>>());
+                    0
+                })
+            },
+            Term::Constant(c) => *c,
+            _ => 0
+        };
 
-            let object = match &triple.2 {
-                Term::Variable(v) => {
-                    // Check if this variable is bound in the current context
-                    if let Some(&bound_value) = binding.get(v) {
-                        bound_value
-                    } else {
-                        // If not bound, create a new placeholder in the dictionary
-                        dict.encode(&format!("ml_output_placeholder_{}", v))
-                    }
-                },
-                Term::Constant(c) => *c,
-                _ => 0
-            };
+        let constructed = Triple {
+            subject,
+            predicate,
+            object,
+        };
 
-            let constructed = Triple {
-                subject,
-                predicate,
-                object,
-            };
-
-            if positive.contains(&constructed) {
-                return true;
-            }
+        if positive.contains(&constructed) {
+            return true;
+        }
     }
 
     false

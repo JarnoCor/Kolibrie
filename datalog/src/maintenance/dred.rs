@@ -1,6 +1,7 @@
 use crate::maintenance::{construct_triple, find_premise_solutions};
 use crate::reasoning::{Reasoner, rules::{evaluate_filters, join_rule}};
 
+use shared::dictionary::Dictionary;
 use shared::{rule::Rule, triple::Triple};
 use std::collections::{HashMap, HashSet};
 
@@ -110,19 +111,19 @@ impl DRedMaintenance {
 
     /// Returns the explicitly deleted facts and the facts derived by them.
     fn overdelete(&mut self, to_remove: &Vec<Triple>, all_facts: &Vec<Triple>) -> HashSet<Triple> {
-        // initialize n_d as the intersection between the explicitly removed facts and the facts in the index manager
-        let mut n_d: HashSet<Triple> = to_remove.iter()
-                .cloned()
-                .collect();
+        let mut n_d: Vec<Triple> = to_remove.iter().copied().collect();
 
         let mut delta: HashSet<Triple>;
         let mut deleted: HashSet<Triple> = HashSet::new();
 
+        let dictionary = self.reasoner.dictionary.clone();
+        let mut dictionary = dictionary.write().unwrap();
+
         loop {
             // calculate the unprocessed changes
             delta = n_d.iter()
-                    .filter(|triple| !deleted.contains(triple))
-                    .cloned()
+                    .filter(|triple| !deleted.contains(*triple))
+                    .copied()
                     .collect();
 
             // if there are no more changes, stop
@@ -136,17 +137,19 @@ impl DRedMaintenance {
             // calculate the difference between all_facts and deleted
             let difference: HashSet<Triple> = all_facts.iter()
                     .filter(|triple| !deleted.contains(*triple))
-                    .cloned()
+                    .copied()
                     .collect();
 
             let mut bindings: Vec<HashMap<String, u32>>;
             for rule in self.reasoner.rules.clone().iter() {
                 bindings = join_rule(rule, &difference, &delta);
-                n_d.extend(self.construct_triple_from_bindings(rule, bindings));
+                n_d.extend(self.construct_triple_from_bindings(rule, bindings, &mut dictionary));
             }
 
             deleted.extend(delta);
         }
+
+        drop(dictionary);
 
         // return the deleted triples
         deleted
@@ -155,34 +158,38 @@ impl DRedMaintenance {
     /// Returns the facts that should not have been deleted.
     pub fn rederive(&mut self, deleted: &HashSet<Triple>, to_delete: &Vec<Triple>, all_facts: &Vec<Triple>) -> HashSet<Triple>{
         // if an explicitly deleted fact is still in the explicit facts, it needs to be rederived if it was deleted
-        let mut rederived: HashSet<Triple> = self.explicit.iter()
-                .filter(|triple| deleted.contains(*triple))
-                .filter(|triple| !to_delete.contains(*triple))
-                .cloned()
-                .collect();
+        let mut rederived: HashSet<Triple> = HashSet::new();
 
         // calculate the difference between all_facts and deleted
         let difference: Vec<Triple> = all_facts.iter()
                 .filter(|triple| !deleted.contains(*triple))
-                .cloned()
+                .copied()
                 .collect();
 
         let mut bindings: Vec<HashMap<String, u32>>;
 
+        let dictionary = self.reasoner.dictionary.clone();
+        let mut dictionary = dictionary.write().unwrap();
+
+        let mut heads: HashSet<Triple> = HashSet::new();
+
         // evaluate the rules with the remaining facts
         for rule in self.reasoner.rules.clone().iter() {
-            let dictionary = &self.reasoner.dictionary;
-            let dictionary = dictionary.write().unwrap();
-
             bindings = find_premise_solutions(&dictionary, rule, &difference);
 
-            drop(dictionary);
-
             // construct triples from these bindings, but only keep those that were deleted by the overdeletion step
-            let constructed_triples: HashSet<Triple> = self.construct_triple_from_bindings(rule, bindings).into_iter()
-                    .filter(|triple| deleted.contains(triple))
-                    .collect();
-            rederived.extend(constructed_triples);
+            let constructed_triples: HashSet<Triple> = self.construct_triple_from_bindings(rule, bindings, &mut dictionary);
+            heads.extend(constructed_triples);
+        }
+
+        drop(dictionary);
+
+        for triple in deleted {
+            if self.explicit.contains(triple) && !to_delete.contains(triple) {
+                rederived.insert(*triple);
+            } else if heads.contains(triple) {
+                rederived.insert(*triple);
+            }
         }
 
         // return the facts that should be rederived
@@ -191,27 +198,27 @@ impl DRedMaintenance {
 
     /// Returns the facts that should be (re)inserted.
     fn insert(&mut self, deleted: &HashSet<Triple>, rederived: &HashSet<Triple>, to_add: &Vec<Triple>, all_facts: &Vec<Triple>) -> HashSet<Triple> {
-        // initialize n_a as the intersection between the explicitly added facts and the facts in the index manager
-        let mut n_a: HashSet<Triple> = to_add.iter()
-                .cloned()
-                .collect();
 
-        n_a.extend(rederived.clone());
+        let mut n_a: Vec<Triple> = to_add.iter().copied().collect();
+
+        n_a.extend(rederived.iter().copied());
 
         let mut delta: HashSet<Triple>;
         let mut added: HashSet<Triple> = HashSet::new();
 
+        let difference: HashSet<Triple> = all_facts.iter()
+                .filter(|triple| !deleted.contains(*triple))
+                .copied()
+                .collect();
+
+        let dictionary = self.reasoner.dictionary.clone();
+        let mut dictionary = dictionary.write().unwrap();
+
         loop {
-            // calculate the difference between all_facts and deleted, and do the union of added
-            let difference: HashSet<Triple> = all_facts.iter()
-            .filter(|triple| !deleted.contains(*triple))
-            .chain(added.iter())
-            .cloned()
-            .collect();
 
             // calculate the unprocessed changes
             delta = n_a.iter()
-                    .filter(|triple| !difference.contains(*triple))
+                    .filter(|triple| !difference.contains(*triple) && !added.contains(*triple))
                     .cloned()
                     .collect();
 
@@ -220,37 +227,41 @@ impl DRedMaintenance {
                 break;
             }
 
+            // add the delta to added
+            added.extend(delta.iter().copied());
+
             // clear the contents of the previous iteration
             n_a.clear();
 
+            let facts: HashSet<Triple> = difference.iter().copied().chain(added.iter().copied()).collect();
+
             let mut bindings: Vec<HashMap<String, u32>>;
             for rule in self.reasoner.rules.clone().iter() {
-                bindings = join_rule(rule, &difference, &delta);
-                n_a.extend(self.construct_triple_from_bindings(rule, bindings));
+                bindings = join_rule(rule, &facts, &delta);
+                n_a.extend(self.construct_triple_from_bindings(rule, bindings, &mut dictionary));
             }
-
-            // add the delta to added
-            added.extend(delta);
         }
+
+        drop(dictionary);
 
         // return the added triples
         added
     }
 
-    fn construct_triple_from_bindings(&mut self, rule: &Rule, bindings: Vec<HashMap<String, u32>>) -> HashSet<Triple> {
+    fn construct_triple_from_bindings(&mut self, rule: &Rule, bindings: Vec<HashMap<String, u32>>, dict: &mut Dictionary) -> HashSet<Triple> {
         let mut result: HashSet<Triple> = HashSet::new();
         let mut inferred: Triple;
 
         for binding in bindings {
-                // check if the binding adheres to the filters of the rule
-                if evaluate_filters(&binding, &rule.filters, &self.reasoner.dictionary.write().unwrap()) {
+            // check if the binding adheres to the filters of the rule
+            if evaluate_filters(&binding, &rule.filters, dict) {
 
-                    for conclusion in &rule.conclusion {
-                        inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary.write().unwrap());
-                        result.insert(inferred);
-                    }
+                for conclusion in &rule.conclusion {
+                    inferred = construct_triple(conclusion, &binding, dict);
+                    result.insert(inferred);
                 }
             }
+        }
 
         result
     }
@@ -283,7 +294,6 @@ mod tests {
     use std::time::Instant;
 
     fn vec_equal<T: Eq+Hash>(vec1: &Vec<T>, vec2: &Vec<T>) -> bool {
-        // TODO: is dit correct?
         let mut counts: HashMap<&T, u32> = HashMap::new();
 
         for element in vec1 {

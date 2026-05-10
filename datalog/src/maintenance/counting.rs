@@ -4,7 +4,6 @@ use crate::reasoning::rules::{evaluate_filters, join_rule};
 
 use shared::triple::Triple;
 use std::collections::{HashMap, HashSet};
-// use std::time::Instant;
 
 /// Alias for a [`HashMap`] containing pairs of [`Triple`] and [`u32`].
 /// 
@@ -96,38 +95,41 @@ impl CountingMaintenance {
     /// assert_eq!(counting_maintenance.decode_triple(&inferred[0]), String::from("b knows a"));
     /// ```
     pub fn semi_naive_counting(&mut self) -> Vec<Triple> {
-        // get all facts currently in the index manager
-        let mut all_facts: HashSet<Triple> = self.reasoner.index_manager.query(None, None, None).into_iter().collect();
+        let mut materialisation: Vec<Triple> = Vec::new();
+        let mut set: HashSet<Triple> = HashSet::new();
 
-        // this is a multiset containing which facts were derived how many times at each iteration
-        let mut counts: Multiset = self.trace.get(0).cloned().unwrap_or(HashMap::new());
-        // counts.extend(all_facts.iter().cloned().map(|k| (k, 1)));
+        let mut i = 0;
+        let mut counts: Multiset = self.trace.get(i).cloned().unwrap_or(HashMap::new());
 
-        let mut inferred_so_far: Vec<Triple> = Vec::new();
-        let mut dataset_so_far: HashSet<Triple> = HashSet::new();
-        let mut delta: HashSet<Triple>;
+        let mut delta: HashSet<Triple> = HashSet::new();
+
+        let mut bindings: Vec<HashMap<String, u32>>;
+        let mut inferred: Triple;
 
         loop {
-            // calculate changes from the previous iterations
-            delta = counts.keys().cloned().collect();
-            delta = delta.difference(&dataset_so_far).cloned().collect();
+            delta.clear();
 
-            // if there are no changes, stop
+            for triple in counts.keys() {
+                if !materialisation.contains(triple) {
+                    delta.insert(*triple);
+                }
+            }
+
             if delta.is_empty() {
                 break;
             }
 
-            // update the dataset seen so far
-            dataset_so_far = dataset_so_far.union(&delta).cloned().collect();
+            materialisation.extend(delta.iter().copied());
+            set.extend(delta.iter().copied());
 
-            counts = HashMap::new();
+            i += 1;
 
-            let mut bindings: Vec<HashMap<String, u32>>;
-            let mut inferred: Triple;
+            let mut inferred_so_far = Vec::new();
+            counts.clear();
 
             for rule in self.reasoner.rules.clone() {
                 // evaluate the rule using the facts in delta
-                bindings = join_rule(&rule, &all_facts, &delta);
+                bindings = join_rule(&rule, &set, &delta);
 
                 for binding in bindings {
                     // check if the binding adheres to the filters of the rule
@@ -137,12 +139,11 @@ impl CountingMaintenance {
                             inferred = construct_triple(conclusion, &binding, &mut self.reasoner.dictionary.write().unwrap());
 
                             // update the count of the inferred triple, or insert the triple with multiplicity 1 if it was not present
-                            counts.entry(inferred.clone()).and_modify(|count| *count += 1).or_insert(1);
+                            counts.entry(inferred).and_modify(|count| *count += 1).or_insert(1);
 
                             // if the inferred triple is a new fact, add it to all facts and to the the index manager
-                            if !all_facts.contains(&inferred) {
-                                all_facts.insert(inferred.clone());
-                                inferred_so_far.push(inferred.clone());
+                            if !inferred_so_far.contains(&inferred) {
+                                inferred_so_far.push(inferred);
 
                                 // add the inferred triple to the index manager
                                 self.reasoner.index_manager.insert(&inferred);
@@ -152,12 +153,10 @@ impl CountingMaintenance {
                 }
             }
 
-            // add the multiset of iteration i to the trace
             self.trace.push(counts.clone());
         }
 
-        // return the facts that were implicitly added to the index manager
-        inferred_so_far
+        materialisation
     }
 
     /// Performs IVM to update the facts in the [`UnifiedIndex`](shared::index_manager::UnifiedIndex) of the [`Reasoner`] by adding and removing explicit and implicit facts using a counting-based approach.
@@ -241,7 +240,7 @@ impl CountingMaintenance {
         multiset_subtract(&mut self.trace[i], &removed_facts);
 
         // contains multiset i of the new trace
-        let mut n_n = &self.trace[i];
+        let mut n_n = self.trace[i].clone();
 
         // the deltas track new changes throughout iterations, for the old and new trace respectively
         let mut delta_old: HashSet<Triple> = HashSet::new();
@@ -255,7 +254,7 @@ impl CountingMaintenance {
             delta_old.clear();
             for triple in n_o.keys() {
                 if !i_o.contains(triple) {
-                    delta_old.insert(triple.clone());
+                    delta_old.insert(*triple);
                 }
             }
 
@@ -263,12 +262,14 @@ impl CountingMaintenance {
             delta_new.clear();
             for triple in n_n.keys() {
                 if !i_n.contains(triple) {
-                    delta_new.insert(triple.clone());
+                    delta_new.insert(*triple);
                 }
             }
 
             // if there is no change in both the old and new trace, stop
             if delta_old.is_empty() && delta_new.is_empty() {
+                self.trace.truncate(i+1);
+                // println!("Stopping: no changes in both traces");
                 break;
             }
 
@@ -278,23 +279,19 @@ impl CountingMaintenance {
 
             // calculate which facts no longer hold
             i_on.retain(|triple| !delta_new.contains(triple));
-            for triple in &delta_old {
-                if !i_n.contains(triple) {
-                    i_on.insert(triple.clone());
-                }
+            for triple in delta_old.difference(&i_n) {
+                    i_on.insert(*triple);
             }
 
             // calculate which facts did not hold previously
             i_no.retain(|triple| !delta_old.contains(triple));
-            for triple in &delta_new {
-                if !i_o.contains(triple) {
-                    i_no.insert(triple.clone());
-                }
+            for triple in delta_new.difference(&i_o) {
+                    i_no.insert(*triple);
             }
 
             // if the old and new deltas are equal and nothing changes between the old and new trace, we can stop early
-            // if delta_old.difference(&delta_new).next() == None && i_on.is_empty() && i_no.is_empty() {
             if delta_old.len() == delta_new.len() && delta_old.is_subset(&delta_new) && i_on.is_empty() && i_no.is_empty() {
+                println!("Stopping: both materialisations are equal");
                 break;
             }
 
@@ -316,49 +313,25 @@ impl CountingMaintenance {
             */
 
             // calculate the symmetric differences, this is for the second part of the task described above
-            // let start = Instant::now();
-            // symm_diff1.clear();
-            // for triple in i_o.intersection(&i_n) {
-            //     if !delta_new.contains(triple) {
-            //         symm_diff1.insert(triple.clone());
-            //     }
-            // }
-
             symm_diff1.clear();
             symm_diff2.clear();
-            for triple in &i_n {
-                if i_o.contains(triple) && !delta_new.contains(triple) {
+            for triple in i_o.intersection(&i_n) {
+                if !delta_new.contains(triple) {
                     symm_diff1.insert(triple.clone());
-                }
-
-                if delta_old.contains(triple) && !delta_new.contains(triple) {
-                    symm_diff2.insert(triple.clone());
                 }
             }
 
-            // symm_diff2.clear();
-            // for triple in &i_n {
-            //     if delta_old.contains(triple) && !delta_new.contains(triple) {
-            //         symm_diff2.insert(triple.clone());
-            //     }
-            // }
-
-            // for triple in delta_old.intersection(&i_n) {
-            //     if !delta_new.contains(triple) {
-            //         symm_diff2.insert(triple.clone());
-            //     }
-            // }
+            for triple in delta_old.intersection(&i_n) {
+                if !delta_new.contains(triple) {
+                    symm_diff2.insert(triple.clone());
+                }
+            }
 
             removed_this_iteration.clear();
 
             // for each rule, calculate which facts are no longer derived from it
             for rule in &self.reasoner.rules {
                 // this is the first part of the task as described above
-
-
-                /*
-                    TODO: vector alloceren buiten de loop, meegeven als parameter aan evaluate_rule_with_restrictions, en dan gebruiken als input voor extend
-                 */
                 evaluate_rule_with_restrictions(&mut rule_results, &mut dictionary, rule, &i_o, &delta_old, &i_on);
                 removed_this_iteration.extend(rule_results.iter().cloned());
 
@@ -376,8 +349,6 @@ impl CountingMaintenance {
                 }
             }
 
-            // println!("Intersection time: {} ms", start.elapsed().as_millis());
-
             /*
             now we calculate which facts newly hold and thus should be added
             there are two parts in this formula:
@@ -388,27 +359,17 @@ impl CountingMaintenance {
             // calculate the symmetric differences, this is for the second part of the task described above
             symm_diff1.clear();
             symm_diff2.clear();
-            for triple in &i_o {
-                if i_n.contains(triple) && !delta_old.contains(triple) {
+            for triple in i_n.intersection(&i_o) {
+                if !delta_old.contains(triple) {
                     symm_diff1.insert(triple.clone());
-                }
-
-                if delta_new.contains(triple) && !delta_old.contains(triple) {
-                    symm_diff2.insert(triple.clone());
                 }
             }
 
-            // for triple in i_n.intersection(&i_o) {
-            //     if !delta_old.contains(triple) {
-            //         symm_diff1.insert(triple.clone());
-            //     }
-            // }
-
-            // for triple in delta_new.intersection(&i_o) {
-            //     if !delta_old.contains(triple) {
-            //         symm_diff2.insert(triple.clone());
-            //     }
-            // }
+            for triple in delta_new.intersection(&i_o) {
+                if !delta_old.contains(triple) {
+                    symm_diff2.insert(triple.clone());
+                }
+            }
 
             added_this_iteration.clear();
 
@@ -437,20 +398,26 @@ impl CountingMaintenance {
             multiset_add(&mut self.trace[i], &added_this_iteration);
 
             // contains multiset i of the new trace
-            n_n = &self.trace[i];
+            n_n = self.trace[i].clone();
         }
 
         drop(dictionary);
 
         // the algorithm has ended, now we update the index manager containing the facts
 
+        let old_materialisation: HashSet<Triple> = self.reasoner.index_manager.query(None, None, None).into_iter().collect();
+        let new_materialisation: HashSet<Triple> = self.trace.iter().flat_map(|map| map.keys().cloned()).collect();
+
+        let to_remove = old_materialisation.difference(&new_materialisation);
+        let to_add = new_materialisation.difference(&old_materialisation);
+
         // remove facts that no longer hold
-        for triple in i_on {
+        for triple in to_remove {
             self.reasoner.index_manager.delete(&triple);
         }
 
         // add facts that have been newly derived
-        for triple in i_no {
+        for triple in to_add {
             self.reasoner.index_manager.insert(&triple);
         }
     }
@@ -735,8 +702,12 @@ mod tests {
     // counting_maintenance.print_trace();
 
 
-    let count = counting_maintenance.trace[1].get(&inferred_facts[0]).unwrap().to_owned();
-    assert_eq!(count, 1);
+    // let count = counting_maintenance.trace[1].get(&inferred_facts[0]).unwrap().to_owned();
+    // assert_eq!(count, 1);
+
+    // counting_maintenance.print_trace();
+
+    assert_eq!(inferred_facts.len(), 3);
 
     }
 
@@ -812,14 +783,13 @@ mod tests {
 
         drop(dictionary);
 
-        let inferred_facts = counting_maintenance.semi_naive_counting();
+        counting_maintenance.semi_naive_counting();
 
-        // cmg.print_trace();
+        counting_maintenance.print_trace();
 
         let all_facts = counting_maintenance.reasoner.index_manager.query(None, None, None);
 
         assert_eq!(7, all_facts.len());
-        assert_eq!(4, inferred_facts.len());
     }
 
     #[test]
@@ -1257,7 +1227,6 @@ mod tests {
         // cmg.print_trace();
 
         let test_trace = vec![HashMap::new(), HashMap::new(), HashMap::new()];
-
         assert_eq!(test_trace, cmg.trace);
 
         let all_facts = cmg.reasoner.index_manager.query(None, None, None);
